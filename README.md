@@ -4,7 +4,6 @@
 
 - **AMADOU Diop**
 - **AKTAS Semih**
-- **HAMED KAFFA**
 
 <div align="center">
 

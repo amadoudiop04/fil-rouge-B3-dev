@@ -5,7 +5,6 @@ import type {
   OrderRecord,
   ProductRecord,
   StatsRecord,
-  UserRecord,
 } from '../types/api';
 
 interface BridgeApi {
@@ -25,10 +24,11 @@ interface BridgeApi {
   getRecentMatches: (limit?: number) => Promise<{ success: boolean; matches?: MatchWithUser[]; error?: string }>;
 }
 
-const USERS_KEY = 'web-users';
-const CURRENT_USER_KEY = 'web-current-user';
 const STATS_KEY = 'web-user-stats';
 const ORDERS_KEY = 'web-orders';
+const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3001';
+
+let authToken: string | null = null;
 
 const fallbackProducts: ProductRecord[] = [
   {
@@ -135,47 +135,33 @@ const parseJson = <T>(value: string | null, fallback: T): T => {
   }
 };
 
-const sanitizeUser = (user: UserRecord): Omit<UserRecord, 'password'> => {
-  const { password: _password, ...safeUser } = user;
-  return safeUser;
+const getAuthToken = (): string | null => authToken;
+
+const setAuthToken = (token: string | null): void => {
+  authToken = token;
 };
 
-const getUsers = (): UserRecord[] => {
-  const users = parseJson<UserRecord[]>(window.localStorage.getItem(USERS_KEY), []);
-  if (users.length > 0) {
-    return users;
-  }
+const callApi = async <T>(path: string, init?: RequestInit): Promise<T | null> => {
+  try {
+    const token = getAuthToken();
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {}),
+      },
+    });
 
-  const seededUser: UserRecord = {
-    id: 1,
-    username: 'DemoUser',
-    email: 'demo@lug.gg',
-    password: 'demo1234',
-    created_at: new Date().toISOString(),
-  };
-  window.localStorage.setItem(USERS_KEY, JSON.stringify([seededUser]));
-  return [seededUser];
-};
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      return { success: false, error: payload?.error || 'Erreur API' } as T;
+    }
 
-const saveUsers = (users: UserRecord[]): void => {
-  window.localStorage.setItem(USERS_KEY, JSON.stringify(users));
-};
-
-const getCurrentUserId = (): number | null => {
-  const raw = window.localStorage.getItem(CURRENT_USER_KEY);
-  if (!raw) {
+    return (await response.json()) as T;
+  } catch {
     return null;
   }
-  const parsed = Number(raw);
-  return Number.isNaN(parsed) ? null : parsed;
-};
-
-const setCurrentUserId = (userId: number | null): void => {
-  if (userId === null) {
-    window.localStorage.removeItem(CURRENT_USER_KEY);
-    return;
-  }
-  window.localStorage.setItem(CURRENT_USER_KEY, String(userId));
 };
 
 const getStatsMap = (): Record<string, StatsRecord> =>
@@ -193,73 +179,74 @@ const saveOrders = (orders: OrderRecord[]): void => {
 
 export const platformApi = {
   async login(email: string, password: string): Promise<AuthResponse> {
+    const apiResponse = await callApi<AuthResponse & { token?: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+    if (apiResponse) {
+      if (apiResponse.success) {
+        setAuthToken(apiResponse.token ?? null);
+      }
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.login(email, password);
     }
 
-    const users = getUsers();
-    const user = users.find((entry) => entry.email.toLowerCase() === email.trim().toLowerCase());
-    if (!user || user.password !== password) {
-      return { success: false, error: 'Email ou mot de passe invalide' };
-    }
-
-    setCurrentUserId(user.id);
-    return { success: true, user: sanitizeUser(user) };
+    return { success: false, error: 'API locale indisponible' };
   },
 
   async register(username: string, email: string, password: string): Promise<AuthResponse> {
+    const apiResponse = await callApi<AuthResponse & { token?: string }>('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ username, email, password }),
+    });
+    if (apiResponse) {
+      if (apiResponse.success) {
+        setAuthToken(apiResponse.token ?? null);
+      }
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.register(username, email, password);
     }
 
-    const users = getUsers();
-    const normalizedEmail = email.trim().toLowerCase();
-    if (users.some((entry) => entry.email.toLowerCase() === normalizedEmail)) {
-      return { success: false, error: 'Cet email est deja utilise' };
-    }
-
-    const nextUser: UserRecord = {
-      id: users.length > 0 ? Math.max(...users.map((entry) => entry.id)) + 1 : 1,
-      username: username.trim(),
-      email: normalizedEmail,
-      password,
-      created_at: new Date().toISOString(),
-    };
-
-    saveUsers([...users, nextUser]);
-    setCurrentUserId(nextUser.id);
-
-    return { success: true, user: sanitizeUser(nextUser) };
+    return { success: false, error: 'API locale indisponible' };
   },
 
   async getCurrentUser(): Promise<AuthResponse> {
+    const apiResponse = await callApi<AuthResponse>('/auth/me', {
+      method: 'GET',
+    });
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.getCurrentUser();
     }
 
-    const userId = getCurrentUserId();
-    if (!userId) {
-      return { success: true };
-    }
-
-    const user = getUsers().find((entry) => entry.id === userId);
-    if (!user) {
-      return { success: true };
-    }
-
-    return { success: true, user: sanitizeUser(user) };
+    return { success: true };
   },
 
   async logout(): Promise<{ success: boolean }> {
+    const apiResponse = await callApi<{ success: boolean }>('/auth/logout', {
+      method: 'POST',
+    });
+    setAuthToken(null);
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.logout();
     }
-
-    setCurrentUserId(null);
     return { success: true };
   },
 
@@ -297,47 +284,37 @@ export const platformApi = {
     userId: number,
     updates: { username?: string; email?: string; riotId?: string; tagLine?: string },
   ): Promise<AuthResponse> {
+    const apiResponse = await callApi<AuthResponse>(`/users/${userId}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(updates),
+    });
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.updateProfile(userId, updates);
     }
 
-    const users = getUsers();
-    const userIndex = users.findIndex((entry) => entry.id === userId);
-    if (userIndex < 0) {
-      return { success: false, error: 'Utilisateur introuvable' };
-    }
-
-    const current = users[userIndex];
-    const updated: UserRecord = {
-      ...current,
-      username: updates.username?.trim() || current.username,
-      email: updates.email?.trim().toLowerCase() || current.email,
-      riot_id: updates.riotId ?? current.riot_id,
-      tag_line: updates.tagLine ?? current.tag_line,
-    };
-
-    users[userIndex] = updated;
-    saveUsers(users);
-
-    return { success: true, user: sanitizeUser(updated) };
+    return { success: false, error: 'API locale indisponible' };
   },
 
   async updatePassword(userId: number, newPassword: string): Promise<{ success: boolean; error?: string }> {
+    const apiResponse = await callApi<{ success: boolean; error?: string }>(`/users/${userId}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password: newPassword }),
+    });
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.updatePassword(userId, newPassword);
     }
 
-    const users = getUsers();
-    const userIndex = users.findIndex((entry) => entry.id === userId);
-    if (userIndex < 0) {
-      return { success: false, error: 'Utilisateur introuvable' };
-    }
-
-    users[userIndex] = { ...users[userIndex], password: newPassword };
-    saveUsers(users);
-    return { success: true };
+    return { success: false, error: 'API locale indisponible' };
   },
 
   async getUserStats(userId: number): Promise<{ success: boolean; stats?: StatsRecord | null; error?: string }> {

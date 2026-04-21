@@ -5,6 +5,7 @@
   "description": "Web application for e-sport tournaments, stats and shop",
   "private": true,
   "scripts": {
+    "api": "node server/local-api.mjs",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
