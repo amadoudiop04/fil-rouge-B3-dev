@@ -1,111 +1,119 @@
 import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 import { useAuth } from '../contexts/AuthContext';
 
-interface LoginFormProps {
-  onSwitchToRegister: () => void;
-}
+interface Props { onSwitchToRegister: () => void; }
 
-export const LoginForm: React.FC<LoginFormProps> = ({ onSwitchToRegister }) => {
+const spring = { type: 'spring' as const, stiffness: 360, damping: 28 };
+
+const EyeIcon: React.FC<{ open: boolean }> = ({ open }) => open ? (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" className="h-4 w-4">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+  </svg>
+) : (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" className="h-4 w-4">
+    <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/>
+    <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+);
+
+export const LoginForm: React.FC<Props> = ({ onSwitchToRegister }) => {
+  const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const { login } = useAuth();
+  const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setIsLoading(true);
-
+    setLoading(true);
     try {
       await login(email, password);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erreur de connexion');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
   return (
-    <div className="w-full max-w-md">
-      <div className="bg-[#0d1b2e] rounded-lg p-8 shadow-xl">
-        <h2 className="text-2xl font-bold text-white mb-6 text-center">Connexion</h2>
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div>
+        <label className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-white/40">
+          Email
+        </label>
+        <input
+          type="email"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          placeholder="votre@email.com"
+          required
+          className="w-full rounded-xl border border-white/[0.07] bg-white/[0.04] px-4 py-3 text-sm text-white placeholder:text-white/20 outline-none transition hover:border-white/15 focus:border-[#FF4654]/60 focus:bg-white/[0.06]"
+        />
+      </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Email
-            </label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="votre@email.com"
-              className="w-full px-4 py-2 bg-[#1a2942] border border-[#2a3f5f] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Mot de passe
-            </label>
-            <div className="relative">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full px-4 py-2 bg-[#1a2942] border border-[#2a3f5f] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition pr-12"
-                required
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-200 transition"
-              >
-                {showPassword ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-4.803m5.596-3.856a3.375 3.375 0 11-4.753 4.753m4.753-4.753L3.3 3.3m11.4 11.4l4.2 4.2M9.366 5.555a9.975 9.975 0 015.25 2.805m3.337 11.452c1.133-2.077 1.829-4.464 1.829-7.007 0-6.627-5.373-12-12-12-.82 0-1.623.05-2.41.15m11.58 11.857a3.375 3.375 0 01-4.753 4.753" />
-                  </svg>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {error && (
-            <div className="p-3 bg-red-500 bg-opacity-20 border border-red-500 rounded-lg text-red-400 text-sm">
-              {error}
-            </div>
-          )}
-
+      <div>
+        <label className="mb-1.5 block text-[10px] font-extrabold uppercase tracking-[0.2em] text-white/40">
+          Mot de passe
+        </label>
+        <div className="relative">
+          <input
+            type={showPw ? 'text' : 'password'}
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+            placeholder="••••••••"
+            required
+            className="w-full rounded-xl border border-white/[0.07] bg-white/[0.04] px-4 py-3 pr-11 text-sm text-white placeholder:text-white/20 outline-none transition hover:border-white/15 focus:border-[#FF4654]/60 focus:bg-white/[0.06]"
+          />
           <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 text-white font-semibold rounded-lg transition"
+            type="button"
+            onClick={() => setShowPw(v => !v)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-white/30 hover:text-white/70 transition"
           >
-            {isLoading ? 'Connexion en cours...' : 'Se connecter'}
+            <EyeIcon open={showPw} />
           </button>
-        </form>
-
-        <div className="mt-6 text-center">
-          <p className="text-gray-400 text-sm">
-            Pas encore de compte ?{' '}
-            <button
-              onClick={onSwitchToRegister}
-              className="text-blue-500 hover:text-blue-400 font-semibold"
-            >
-              S'inscrire
-            </button>
-          </p>
         </div>
       </div>
-    </div>
+
+      {error && (
+        <motion.p
+          initial={{ opacity: 0, y: -4 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="rounded-xl border border-[#FF4654]/30 bg-[#FF4654]/10 px-4 py-2.5 text-xs text-[#FF4654]"
+        >
+          {error}
+        </motion.p>
+      )}
+
+      <motion.button
+        type="submit"
+        disabled={loading}
+        whileHover={{ scale: 1.02 }}
+        whileTap={{ scale: 0.97 }}
+        transition={spring}
+        className="w-full rounded-xl bg-[#FF4654] py-3 text-sm font-extrabold uppercase tracking-[0.15em] text-white transition hover:bg-[#e03040] disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {loading ? (
+          <span className="flex items-center justify-center gap-2">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            Connexion…
+          </span>
+        ) : 'Se connecter'}
+      </motion.button>
+
+      <p className="text-center text-xs text-white/30">
+        Pas de compte ?{' '}
+        <button
+          type="button"
+          onClick={onSwitchToRegister}
+          className="font-bold text-[#FF4654] hover:text-white transition"
+        >
+          S'inscrire
+        </button>
+      </p>
+    </form>
   );
 };

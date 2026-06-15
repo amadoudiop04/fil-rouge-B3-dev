@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { User } from '../contexts/AuthContext';
+import { User, useAuth } from '../contexts/AuthContext';
 import { Avatar } from '../components/Avatar';
 import { platformApi } from '../services/platformApi';
 
@@ -28,6 +28,7 @@ const formatJoinDate = (date?: string) => {
 };
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onLogout, onNavigate }) => {
+  const { refreshUser } = useAuth();
   const [fullName, setFullName] = useState(user.username);
   const [email, setEmail] = useState(user.email);
   const [password, setPassword] = useState('');
@@ -37,6 +38,14 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onLogout, onNavi
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+
+  // Riot account state
+  const [riotInput, setRiotInput] = useState('');
+  const [riotConnecting, setRiotConnecting] = useState(false);
+  const [riotError, setRiotError] = useState<string | null>(null);
+  const [connectedRiot, setConnectedRiot] = useState<{ name: string; tag: string; level?: number } | null>(
+    user.riotId && user.tagLine ? { name: user.riotId, tag: user.tagLine } : null
+  );
 
   useEffect(() => {
     const storedNotifications = window.localStorage.getItem('profile-notifications');
@@ -64,6 +73,50 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onLogout, onNavi
   const validateEmail = (value: string) => {
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailPattern.test(value);
+  };
+
+  const handleConnectRiot = async () => {
+    setRiotError(null);
+    const parts = riotInput.trim().split('#');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      setRiotError('Format invalide. Utilise NomJoueur#TAG (ex: TenZ#000)');
+      return;
+    }
+    const [name, tag] = parts;
+    setRiotConnecting(true);
+    try {
+      const res = await platformApi.getRiotPlayer(name, tag);
+      if (!res.success) {
+        if (res.needsApiKey) {
+          setRiotError('⚠ Clé API manquante — va sur dash.henrikdev.xyz, crée un compte gratuit, copie ta clé et ajoute RIOT_API_KEY=ta_clé dans le fichier .env puis redémarre npm run api');
+        } else {
+          setRiotError(res.error || 'Joueur introuvable. Vérifie le pseudo et le tag.');
+        }
+        return;
+      }
+      const saveRes = await platformApi.updateProfile(Number(user.id), { riotId: name, tagLine: tag });
+      if (!saveRes.success) {
+        setRiotError(saveRes.error || 'Erreur lors de la sauvegarde');
+        return;
+      }
+      setConnectedRiot({ name, tag, level: res.account?.account_level });
+      setRiotInput('');
+      await refreshUser();
+    } catch {
+      setRiotError('Erreur de connexion au serveur');
+    } finally {
+      setRiotConnecting(false);
+    }
+  };
+
+  const handleDisconnectRiot = async () => {
+    try {
+      await platformApi.updateProfile(Number(user.id), { riotId: '', tagLine: '' });
+      setConnectedRiot(null);
+      await refreshUser();
+    } catch {
+      // silent
+    }
   };
 
   const handleSave = async () => {
@@ -219,6 +272,78 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onLogout, onNavi
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Riot Games account */}
+          <div>
+            <p className="mb-3 text-[11px] font-extrabold uppercase tracking-[0.18em] text-cyan-200/80">
+              Compte Riot Games
+            </p>
+
+            <AnimatePresence mode="wait">
+              {connectedRiot ? (
+                <motion.div
+                  key="connected"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  className="flex items-center justify-between rounded-xl border border-green-500/25 bg-green-500/8 px-3 py-3"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-red-500/15">
+                      <span className="text-sm font-bold text-red-400">R</span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-white">
+                        {connectedRiot.name}
+                        <span className="font-normal text-gray-400">#{connectedRiot.tag}</span>
+                      </p>
+                      <p className="text-[10px] text-green-400">Compte connecté ✓</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectRiot}
+                    className="text-xs font-semibold text-red-400 transition hover:text-red-300"
+                  >
+                    Déconnecter
+                  </button>
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="disconnected"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  className="space-y-2"
+                >
+                  <div className="flex items-center gap-3 rounded-xl border border-gray-800 bg-[#0f1a2d] px-3 py-3">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-500/15">
+                      <span className="text-xs font-bold text-red-400">R</span>
+                    </div>
+                    <input
+                      type="text"
+                      value={riotInput}
+                      onChange={(e) => setRiotInput(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleConnectRiot()}
+                      placeholder="NomJoueur#TAG  (ex: TenZ#000)"
+                      className="w-full bg-transparent text-sm font-semibold text-white outline-none placeholder:font-normal placeholder:text-gray-500"
+                    />
+                  </div>
+                  {riotError && (
+                    <p className="px-1 text-xs text-red-400">{riotError}</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={handleConnectRiot}
+                    disabled={riotConnecting || !riotInput.trim()}
+                    className="w-full rounded-xl bg-red-600 py-2.5 text-sm font-extrabold uppercase tracking-wide text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {riotConnecting ? 'Vérification…' : 'Connecter mon compte Riot'}
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <div>

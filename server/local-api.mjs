@@ -292,6 +292,205 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Riot proxy — player profile (official Riot API)
+    const riotPlayerMatch = url.pathname.match(/^\/riot\/player\/([^/]+)\/([^/]+)$/);
+    if (req.method === 'GET' && riotPlayerMatch) {
+      const name = decodeURIComponent(riotPlayerMatch[1]);
+      const tag  = decodeURIComponent(riotPlayerMatch[2]);
+      const apiKey = process.env.RIOT_API_KEY || '';
+
+      if (!apiKey) {
+        sendJson(res, 503, { success: false, needsApiKey: true, error: 'Clé API Riot manquante dans le fichier .env (RIOT_API_KEY=RGAPI-...)' });
+        return;
+      }
+
+      const riotHeaders = { 'X-Riot-Token': apiKey };
+
+      try {
+        // 1. Account lookup (global endpoint)
+        const accountRes = await fetch(
+          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+          { headers: riotHeaders }
+        );
+
+        if (accountRes.status === 401 || accountRes.status === 403) {
+          sendJson(res, 503, { success: false, needsApiKey: true, error: 'Clé API Riot invalide ou expirée. Renouvelle-la sur developer.riotgames.com (valide 24h).' });
+          return;
+        }
+        if (!accountRes.ok) {
+          sendJson(res, 404, { success: false, error: 'Joueur introuvable. Vérifie le pseudo et le tag.' });
+          return;
+        }
+
+        const accountData = await accountRes.json();
+        const puuid = accountData.puuid;
+        const region = process.env.RIOT_REGION || 'eu';
+
+        // 2. Recent match list
+        const matchListRes = await fetch(
+          `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
+          { headers: riotHeaders }
+        );
+        const matchList = matchListRes.ok ? await matchListRes.json() : null;
+
+        // 3. Get details of last 3 matches to infer rank + stats
+        let currentTier = null;
+        let currentTierName = null;
+        if (matchList?.history?.length) {
+          const recentIds = matchList.history.slice(0, 3).map((m) => m.matchId);
+          const details = await Promise.all(
+            recentIds.map((id) =>
+              fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null)
+            )
+          );
+          for (const match of details) {
+            if (!match) continue;
+            const player = match.players?.find((p) => p.puuid === puuid);
+            if (player?.competitiveTier && player.competitiveTier > 0) {
+              currentTier = player.competitiveTier;
+              break;
+            }
+          }
+        }
+
+        // Valorant tier names
+        const TIER_NAMES = [
+          'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
+          'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
+          'Gold 1','Gold 2','Gold 3','Platinum 1','Platinum 2','Platinum 3',
+          'Diamond 1','Diamond 2','Diamond 3','Ascendant 1','Ascendant 2','Ascendant 3',
+          'Immortal 1','Immortal 2','Immortal 3','Radiant',
+        ];
+        if (currentTier !== null) {
+          currentTierName = TIER_NAMES[currentTier] ?? 'Non classé';
+        }
+
+        sendJson(res, 200, {
+          success: true,
+          account: {
+            puuid,
+            name: accountData.gameName,
+            tag: accountData.tagLine,
+            account_level: null,
+          },
+          mmr: currentTier !== null ? {
+            current_data: {
+              currenttier: currentTier,
+              currenttierpatched: currentTierName,
+              ranking_in_tier: 0,
+              mmr_change_to_last_game: 0,
+              elo: 0,
+              old: false,
+            },
+          } : null,
+          puuid,
+          region,
+        });
+      } catch (err) {
+        console.error('Riot player error:', err);
+        sendJson(res, 502, { success: false, error: 'Erreur lors de la connexion aux serveurs Riot' });
+      }
+      return;
+    }
+
+    // Riot proxy — match history (official Riot API)
+    const riotMatchesMatch = url.pathname.match(/^\/riot\/matches\/([^/]+)\/([^/]+)$/);
+    if (req.method === 'GET' && riotMatchesMatch) {
+      const name = decodeURIComponent(riotMatchesMatch[1]);
+      const tag  = decodeURIComponent(riotMatchesMatch[2]);
+      const size = Math.min(Number(url.searchParams.get('size') || '5'), 8);
+      const apiKey = process.env.RIOT_API_KEY || '';
+
+      if (!apiKey) {
+        sendJson(res, 200, { success: true, matches: [] });
+        return;
+      }
+
+      const riotHeaders = { 'X-Riot-Token': apiKey };
+      const region = process.env.RIOT_REGION || 'eu';
+
+      try {
+        // Get PUUID
+        const accountRes = await fetch(
+          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+          { headers: riotHeaders }
+        );
+        if (!accountRes.ok) { sendJson(res, 200, { success: true, matches: [] }); return; }
+        const { puuid } = await accountRes.json();
+
+        // Get match list
+        const matchListRes = await fetch(
+          `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
+          { headers: riotHeaders }
+        );
+        if (!matchListRes.ok) { sendJson(res, 200, { success: true, matches: [] }); return; }
+        const matchList = await matchListRes.json();
+        const recentIds = (matchList.history || []).slice(0, size).map((m) => m.matchId);
+
+        // Get match details in parallel
+        const details = await Promise.all(
+          recentIds.map((id) =>
+            fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null)
+          )
+        );
+
+        const TIER_NAMES = [
+          'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
+          'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
+          'Gold 1','Gold 2','Gold 3','Platinum 1','Platinum 2','Platinum 3',
+          'Diamond 1','Diamond 2','Diamond 3','Ascendant 1','Ascendant 2','Ascendant 3',
+          'Immortal 1','Immortal 2','Immortal 3','Radiant',
+        ];
+
+        const matches = details
+          .filter(Boolean)
+          .map((match) => {
+            const player = match.players?.find((p) => p.puuid === puuid);
+            if (!player) return null;
+
+            const myTeam = match.teams?.find((t) => t.teamId === player.teamId);
+            const won = myTeam?.won === true;
+            const mapId = match.matchInfo?.mapId || '';
+            const mapName = mapId.split('/').pop() || 'Unknown';
+
+            return {
+              matchId: match.matchInfo?.matchId || '',
+              map: mapName,
+              mode: match.matchInfo?.queueId || 'unrated',
+              date: match.matchInfo?.gameStartMillis
+                ? new Date(match.matchInfo.gameStartMillis).toLocaleDateString('fr-FR')
+                : '',
+              result: won ? 'W' : 'L',
+              roundsWon: myTeam?.roundsWon || 0,
+              roundsLost: (match.matchInfo?.numberOfRounds || 0) - (myTeam?.roundsWon || 0),
+              agent: player.characterId || 'Unknown',
+              agentImage: null,
+              kills: player.stats?.kills || 0,
+              deaths: player.stats?.deaths || 0,
+              assists: player.stats?.assists || 0,
+              headshotPct: (player.stats?.kills || 0) > 0
+                ? Math.round(((player.stats?.headshots || 0) / player.stats.kills) * 100)
+                : 0,
+              avgDamage: (match.matchInfo?.numberOfRounds || 0) > 0
+                ? Math.round((player.stats?.score || 0) / match.matchInfo.numberOfRounds)
+                : 0,
+              rank: player.competitiveTier ? (TIER_NAMES[player.competitiveTier] || '') : '',
+            };
+          })
+          .filter(Boolean);
+
+        sendJson(res, 200, { success: true, matches });
+      } catch (err) {
+        console.error('Riot matches error:', err);
+        sendJson(res, 200, { success: true, matches: [] });
+      }
+      return;
+    }
+
     sendJson(res, 404, { success: false, error: 'Route introuvable' });
   } catch (error) {
     console.error('API error:', error);

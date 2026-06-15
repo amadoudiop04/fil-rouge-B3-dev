@@ -4,6 +4,9 @@ import type {
   MatchWithUser,
   OrderRecord,
   ProductRecord,
+  RiotAccount,
+  RiotMMR,
+  RiotMatch,
   StatsRecord,
 } from '../types/api';
 
@@ -350,5 +353,29 @@ export const platformApi = {
     }
 
     return { success: true, matches: fallbackMatches.slice(0, limit) };
+  },
+
+  async getRiotPlayer(name: string, tag: string): Promise<{
+    success: boolean;
+    account?: RiotAccount;
+    mmr?: RiotMMR | null;
+    error?: string;
+    needsApiKey?: boolean;
+  }> {
+    const result = await callApi<{ success: boolean; account?: RiotAccount; mmr?: RiotMMR | null; error?: string; needsApiKey?: boolean }>(
+      `/riot/player/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`
+    );
+    return result ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getRiotMatches(name: string, tag: string, size = 5): Promise<{
+    success: boolean;
+    matches?: RiotMatch[];
+    error?: string;
+  }> {
+    const result = await callApi<{ success: boolean; matches?: RiotMatch[]; error?: string }>(
+      `/riot/matches/${encodeURIComponent(name)}/${encodeURIComponent(tag)}?size=${size}`
+    );
+    return result ?? { success: false, matches: [], error: 'API indisponible' };
   },
 };
