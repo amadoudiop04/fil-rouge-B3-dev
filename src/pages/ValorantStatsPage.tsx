@@ -14,11 +14,23 @@ interface AgentStat {
   wr: number; pr: number; ban: number; kd: number; games: number;
 }
 
+interface Ability {
+  slot: string;
+  displayName: string;
+  description: string;
+  displayIcon: string | null;
+}
+
 interface ValorantAgent {
   uuid: string;
   displayName: string;
   displayIcon: string;
-  role: { displayName: string } | null;
+  fullPortrait: string | null;
+  background: string | null;
+  backgroundGradientColors: string[];
+  description: string;
+  role: { displayName: string; description?: string; displayIcon?: string } | null;
+  abilities: Ability[];
 }
 
 interface ProPlayer {
@@ -146,6 +158,274 @@ const RoleBadge: React.FC<{ role: string }> = ({ role }) => (
   </span>
 );
 
+// ─── Agent guides (how to play / meta) ──────────────────────────────────────────
+
+interface RoleGuide { playstyle: string; generalTips: string[]; }
+const ROLE_GUIDE: Record<string, RoleGuide> = {
+  Duelist: {
+    playstyle: "Entry fragger : tu prends l'espace en premier et crées l'ouverture pour ton équipe.",
+    generalTips: [
+      "Entre en premier sur les sites, mais attends les utilitaires de tes initiateurs.",
+      "Ne gaspille pas tes capacités de mobilité : garde une option de repli.",
+      "Trade tes coéquipiers — ne joue jamais trop loin du reste de l'équipe.",
+    ],
+  },
+  Controller: {
+    playstyle: "Contrôleur : tu bloques les lignes de vue avec tes fumigènes pour ouvrir ou défendre les sites.",
+    generalTips: [
+      "Pré-place tes smokes pour couper les angles clés avant l'exécution.",
+      "Communique le timing de tes fumigènes avec les entries.",
+      "Garde une smoke pour le post-plant / retake.",
+    ],
+  },
+  Initiator: {
+    playstyle: "Initiateur : tu récoltes l'info et prépares l'entrée avec flashs et reconnaissance.",
+    generalTips: [
+      "Utilise tes capacités d'info avant chaque prise de site.",
+      "Coordonne tes flashs avec l'entry duelist (flash-in).",
+      "Garde une capacité pour le retake ou le post-plant.",
+    ],
+  },
+  Sentinel: {
+    playstyle: "Sentinelle : tu ancres un site, surveilles les flancs et ralentis les pushs adverses.",
+    generalTips: [
+      "Place tes pièges sur les flancs et les entrées secondaires.",
+      "Joue patient : ton rôle est de gagner du temps et de récupérer l'info.",
+      "Garde tes utilitaires pour le retake plutôt que de tout dépenser en début de round.",
+    ],
+  },
+};
+
+interface AgentGuide { difficulty: 1 | 2 | 3; summary?: string; tips?: string[]; bestMaps?: string[]; }
+const AGENT_GUIDE: Record<string, AgentGuide> = {
+  Jett:      { difficulty: 3, summary: "Duelist mobile par excellence : dash et updraft pour des prises agressives et des frags à l'opérateur.", tips: ["Garde ton dash pour t'extraire après un kill, pas seulement pour entrer.", "L'updraft + smoke des contrôleurs ouvre des angles imprévisibles.", "Maîtrise l'Operator : ton dash compense le manque de repli."], bestMaps: ["Ascent", "Breeze", "Icebox"] },
+  Reyna:     { difficulty: 2, summary: "Duelist auto-suffisante : chaque kill te soigne (Devour) ou te rend invincible (Dismiss).", tips: ["Consomme tes orbes immédiatement après un frag.", "Leer (œil) avant de peek pour aveugler les défenseurs.", "Tu brilles en solo : prends les duels que tu peux gagner."], bestMaps: ["Bind", "Lotus", "Fracture"] },
+  Neon:      { difficulty: 3, summary: "Duelist ultra-rapide : sprint et glissade pour surprendre les angles.", tips: ["Utilise la glissade pour finir une course et tirer précisément.", "Le mur électrique bloque et ralentit les rotations.", "Ne sprinte pas à l'aveugle : combine avec les flashs alliés."], bestMaps: ["Breeze", "Fracture", "Pearl"] },
+  Iso:       { difficulty: 2, summary: "Duelist de duel : son bouclier (Double Tap) te protège pour gagner les 1v1.", tips: ["Active ton bouclier avant chaque peek important.", "Le mur immobilisant coupe les lignes pendant l'exécution.", "Ton ultime force un 1v1 isolé — utilise-le pour casser un ancrage."], bestMaps: ["Lotus", "Sunset", "Split"] },
+  Raze:      { difficulty: 2, summary: "Duelist d'explosifs : Boombot et grenades pour déloger et entrer en force.", tips: ["Le satchel double permet des entrées verticales surprenantes.", "Boombot révèle et chasse les défenseurs d'un angle.", "Showstopper nettoie un site groupé ou un post-plant."], bestMaps: ["Bind", "Split", "Haven"] },
+  Phoenix:   { difficulty: 1, summary: "Duelist autonome : flashs courbées et soins via ton feu, idéal pour apprendre.", tips: ["Tes flashs se courbent : aveugle les angles sans t'exposer.", "Reste dans ton mur de feu pour récupérer de la vie.", "Ton ultime te permet de prendre des infos sans risque."], bestMaps: ["Haven", "Ascent", "Split"] },
+  Yoru:      { difficulty: 3, summary: "Duelist de déception : téléportation et leurres pour prendre les défenseurs à revers.", tips: ["Place ton téléport tôt pour un flanc imprévisible.", "Le leurre simule des bruits de pas — bait les angles.", "Ta flash traverse les murs : utilise-la en entrée."], bestMaps: ["Bind", "Pearl", "Ascent"] },
+  Omen:      { difficulty: 2, summary: "Contrôleur flexible : smokes à distance, flash et téléportation pour reprendre l'espace.", tips: ["Tes smokes peuvent être placées de n'importe où sur la map.", "Téléporte-toi sur un angle inattendu pour surprendre.", "Ton ultime sert à info ou flank — pas à frag directement."], bestMaps: ["Ascent", "Split", "Haven"] },
+  Clove:     { difficulty: 2, summary: "Contrôleur agressif : tu peux smoke et fragger même après ta mort (résurrection).", tips: ["Joue agressivement : ton ultime te ressuscite si tu frag/assist.", "Tes smokes se placent à distance comme Omen.", "Le decay (Ruse) affaiblit les ennemis avant un duel."], bestMaps: ["Lotus", "Sunset", "Breeze"] },
+  Viper:     { difficulty: 3, summary: "Contrôleuse de zone : mur toxique et nuage pour couper la map en deux.", tips: ["Gère ton carburant : ne laisse pas tomber ton mur trop tôt.", "Le Snake Bite ralentit et débusque pour le retake.", "Ton ultime (Viper's Pit) domine les post-plants et retakes."], bestMaps: ["Breeze", "Icebox", "Fracture"] },
+  Brimstone: { difficulty: 1, summary: "Contrôleur simple et puissant : trois smokes posées à la carte + molotov et ultime dévastateur.", tips: ["Pose tes smokes via la carte tactique pour des exécutions propres.", "Stim Beacon accélère la cadence de tir de l'équipe.", "Ton ultime punit les post-plants et les groupes."], bestMaps: ["Bind", "Ascent", "Split"] },
+  Astra:     { difficulty: 3, summary: "Contrôleuse globale : place des étoiles sur toute la map pour smoke, stun et aspirer.", tips: ["Place tes étoiles pendant le temps mort avant le round.", "Garde une étoile pour le retake / post-plant.", "Le mur (Cosmic Divide) coupe le son et la vision."], bestMaps: ["Haven", "Lotus", "Pearl"] },
+  Harbor:    { difficulty: 2, summary: "Contrôleur aquatique : murs d'eau courbables et bouclier pour des exécutions agressives.", tips: ["Ton mur peut être courbé pour couvrir des angles complexes.", "La bulle (Cove) bloque les balles le temps de planter.", "Combine High Tide et Cascade pour une entrée couverte."], bestMaps: ["Pearl", "Lotus", "Sunset"] },
+  Sova:      { difficulty: 2, summary: "Initiateur d'info : flèche reco, drone et flèche à choc pour révéler et déloger.", tips: ["Apprends les line-ups de flèche reco par map.", "Le drone (Owl Drive) confirme un site avant l'entrée.", "Ton ultime traverse les murs — punis les positions connues."], bestMaps: ["Ascent", "Icebox", "Breeze"] },
+  Skye:      { difficulty: 2, summary: "Initiatrice polyvalente : flashs (oiseau), soin de zone et loup d'info.", tips: ["Le faucon (flash) peut être rappelé si non déclenché.", "Le loup (Trailblazer) révèle et concuss un angle.", "Ton ultime traque plusieurs ennemis — idéal en retake."], bestMaps: ["Haven", "Fracture", "Abyss"] },
+  Fade:      { difficulty: 3, summary: "Initiatrice d'info brutale : prowler, œil de reconnaissance et terreur de zone.", tips: ["Apprends les line-ups de Haunt (œil) pour révéler les sites.", "Le prowler suit l'info de ton œil — combo dévastateur.", "Ton ultime sourd + révèle une large zone pour le retake."], bestMaps: ["Bind", "Lotus", "Haven"] },
+  Gekko:     { difficulty: 1, summary: "Initiateur réutilisable : ses créatures (flash, capture, plant) se ramassent et se relancent.", tips: ["Récupère Dizzy et Wingman après usage pour les réutiliser.", "Wingman peut planter/désamorcer le Spike à ta place.", "Mosh Pit (ultime) déblaie un site ou un post-plant."], bestMaps: ["Split", "Sunset", "Pearl"] },
+  'KAY/O':   { difficulty: 2, summary: "Initiateur anti-capacités : son couteau (ZERO/point) supprime les pouvoirs ennemis.", tips: ["Lance ton couteau avant l'exécution pour couper les utilitaires.", "Tes flashs (FLASH/drive) sont parmi les meilleures du jeu.", "Ton ultime te relève si tu es abattu — joue agressif."], bestMaps: ["Ascent", "Bind", "Icebox"] },
+  Breach:    { difficulty: 2, summary: "Initiateur de zone : flashs et stuns à travers les murs pour ouvrir les sites étroits.", tips: ["Tes capacités traversent les murs : prépare l'entrée à l'aveugle.", "Coordonne Fault Line (stun) + flash avec les duelists.", "Rolling Thunder (ultime) déstabilise tout un site."], bestMaps: ["Split", "Bind", "Lotus"] },
+  Chamber:   { difficulty: 3, summary: "Sentinelle agressive : téléport, piège et armes signature pour tenir les angles à l'opérateur.", tips: ["Place ton ancre de téléport pour peek agressivement sans risque.", "Headhunter (pistolet) gagne les pistols et les eco.", "Tour Demoniaque (ultime) = un Operator gratuit pour tenir un angle."], bestMaps: ["Bind", "Haven", "Sunset"] },
+  Killjoy:   { difficulty: 1, summary: "Sentinelle de gadgets : tourelle, alarmbot et nanoswarms pour verrouiller un site.", tips: ["Place ton swarm + alarmbot pour couvrir les flancs.", "La tourelle donne de l'info — replace-la souvent.", "Lockdown (ultime) force le retake ou le départ d'un site."], bestMaps: ["Ascent", "Split", "Bind"] },
+  Cypher:    { difficulty: 2, summary: "Sentinelle d'information : caméra, fils-pièges et cage pour surveiller toute la map.", tips: ["Cache ta caméra dans des spots inattendus.", "Les fils-pièges couvrent les flancs et révèlent les pushs.", "Ton ultime révèle toutes les positions ennemies — décisif en retake."], bestMaps: ["Ascent", "Split", "Pearl"] },
+  Sage:      { difficulty: 1, summary: "Sentinelle de soutien : mur, ralentissement, soin et résurrection — le pilier de l'équipe.", tips: ["Le mur peut bloquer une entrée ou créer un boost vertical.", "Garde ta résurrection pour ton meilleur joueur / fragger.", "Les orbes de ralentissement protègent un site ou un post-plant."], bestMaps: ["Icebox", "Ascent", "Bind"] },
+  Deadlock:  { difficulty: 2, summary: "Sentinelle de contrôle : barrière, capteurs sonores et nasse pour bloquer les pushs.", tips: ["La barrière (GravNet) bloque physiquement une entrée.", "Les capteurs sonores concussent ceux qui font du bruit.", "Ton ultime capture un ennemi à travers les murs."], bestMaps: ["Icebox", "Breeze", "Abyss"] },
+  Vyse:      { difficulty: 3, summary: "Sentinelle de piège : ronces, mur métallique instantané et brouillage d'armes.", tips: ["Pré-place tes ronces invisibles sur les angles clés.", "Le mur (Razorvine) se déclenche au moment parfait pour stopper une entrée.", "Ton ultime (Steal) empêche les ennemis de tirer — combo retake."], bestMaps: ["Sunset", "Lotus", "Haven"] },
+};
+
+const SLOT_KEY: Record<string, string> = { Ability1: 'Q', Ability2: 'E', Grenade: 'C', Ultimate: 'X', Passive: '•' };
+const DIFFICULTY_LABEL = ['', 'Facile', 'Intermédiaire', 'Difficile'];
+
+// ─── Agent detail page ──────────────────────────────────────────────────────────
+
+const AgentDetail: React.FC<{
+  name: string;
+  stat?: AgentStat;
+  apiAgent?: ValorantAgent;
+  matchup?: { weakTo: string[]; synergy: string[] };
+  apiAgents: Record<string, ValorantAgent>;
+  onBack: () => void;
+  onSelect: (name: string) => void;
+}> = ({ name, stat, apiAgent, matchup, apiAgents, onBack, onSelect }) => {
+  const guide     = AGENT_GUIDE[name];
+  const roleGuide = stat ? ROLE_GUIDE[stat.role] : undefined;
+  const summary   = guide?.summary ?? roleGuide?.playstyle ?? '';
+  const tips      = guide?.tips ?? roleGuide?.generalTips ?? [];
+  const bestMaps  = guide?.bestMaps ?? [];
+  const difficulty = guide?.difficulty ?? 2;
+
+  // Tier-list rank (by tier, then win-rate)
+  const rank = useMemo(() => {
+    const sorted = [...AGENT_STATS].sort((a, b) => {
+      const d = TIER_ORDER.indexOf(a.tier as typeof TIER_ORDER[number]) - TIER_ORDER.indexOf(b.tier as typeof TIER_ORDER[number]);
+      return d !== 0 ? d : b.wr - a.wr;
+    });
+    return sorted.findIndex(a => a.name === name) + 1;
+  }, [name]);
+
+  const grad = apiAgent?.backgroundGradientColors ?? [];
+  const heroGradient = grad.length >= 4
+    ? `linear-gradient(120deg, #${grad[0]} 0%, #${grad[1]} 40%, #${grad[2]} 75%, #${grad[3]} 100%)`
+    : 'linear-gradient(120deg, var(--accent) 0%, var(--accent2) 100%)';
+
+  const abilities = (apiAgent?.abilities ?? []).filter(a => a.displayName && a.slot !== 'Passive' || (a.slot === 'Passive' && a.description));
+
+  const metaCards = stat ? [
+    { label: 'Win Rate',  value: `${stat.wr.toFixed(1)}%`, color: stat.wr >= 52.5 ? 'var(--green)' : stat.wr >= 50 ? 'var(--text1)' : 'var(--red)' },
+    { label: 'Pick Rate', value: `${stat.pr.toFixed(1)}%`, color: 'var(--text1)' },
+    { label: 'Ban Rate',  value: `${stat.ban.toFixed(1)}%`, color: 'var(--text1)' },
+    { label: 'K/D',       value: stat.kd.toFixed(2), color: stat.kd >= 1.2 ? 'var(--green)' : 'var(--text1)' },
+    { label: 'Parties',   value: fmt(stat.games), color: 'var(--text1)' },
+    { label: 'Rang méta', value: `#${rank}`, color: 'var(--accent2)' },
+  ] : [];
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25 }} className="space-y-5">
+
+      {/* Back */}
+      <button onClick={onBack}
+        className="flex items-center gap-2 text-sm font-semibold transition hover:opacity-80"
+        style={{ color: 'var(--text2)' }}>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" className="h-4 w-4"><path d="M10 3l-5 5 5 5" /></svg>
+        Retour à la tier list
+      </button>
+
+      {/* Hero */}
+      <div className="relative overflow-hidden rounded-2xl" style={{ minHeight: 280, background: heroGradient }}>
+        {apiAgent?.background && (
+          <img src={apiAgent.background} alt="" className="absolute inset-0 h-full w-full object-cover opacity-20 mix-blend-luminosity" />
+        )}
+        {/* dark scrim for legibility */}
+        <div className="absolute inset-0" style={{ background: 'linear-gradient(90deg, rgba(6,20,41,0.94) 0%, rgba(6,20,41,0.72) 48%, rgba(6,20,41,0.25) 100%)' }} />
+        {/* portrait */}
+        {apiAgent?.fullPortrait && (
+          <img src={apiAgent.fullPortrait} alt={name}
+            className="absolute right-0 bottom-0 h-[112%] object-contain pointer-events-none"
+            style={{ filter: 'drop-shadow(0 12px 30px rgba(0,0,0,0.5))' }} />
+        )}
+        {/* content */}
+        <div className="relative p-7 max-w-[60%]">
+          <div className="flex items-center gap-3 mb-2">
+            {stat && <RoleBadge role={stat.role} />}
+            {stat && <TierBadge tier={stat.tier} />}
+            <span className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: 'var(--text2)' }}>
+              {Array.from({ length: 3 }).map((_, i) => (
+                <span key={i} className="h-1.5 w-4 rounded-full"
+                  style={{ background: i < difficulty ? 'var(--accent2)' : 'rgba(255,255,255,0.15)' }} />
+              ))}
+              {DIFFICULTY_LABEL[difficulty]}
+            </span>
+          </div>
+          <h1 className="font-display text-[52px] font-bold leading-none uppercase tracking-wide">{name}</h1>
+          {apiAgent?.role && (
+            <p className="mt-3 text-[14px] leading-relaxed" style={{ color: 'var(--text2)' }}>
+              {apiAgent.role.description || apiAgent.description}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Meta cards */}
+      <div className="grid grid-cols-6 gap-3">
+        {metaCards.map(c => (
+          <div key={c.label} className="card p-3.5 text-center">
+            <div className="font-mono text-[20px] font-bold leading-none" style={{ color: c.color }}>{c.value}</div>
+            <div className="mt-1.5 text-[10px] uppercase tracking-wider" style={{ color: 'var(--text3)' }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-5 gap-4">
+
+        {/* Abilities */}
+        <div className="card p-5 col-span-3">
+          <h3 className="font-display text-[14px] font-bold uppercase tracking-wide mb-4">Compétences</h3>
+          <div className="space-y-3">
+            {abilities.length === 0 && <p className="text-sm" style={{ color: 'var(--text3)' }}>Chargement des compétences…</p>}
+            {abilities.map(ab => (
+              <div key={ab.slot} className="flex gap-3.5 items-start">
+                <div className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--raised)' }}>
+                  {ab.displayIcon
+                    ? <img src={ab.displayIcon} alt={ab.displayName} className="h-7 w-7 object-contain" />
+                    : <span className="text-[13px] font-bold" style={{ color: 'var(--accent2)' }}>{SLOT_KEY[ab.slot] ?? '?'}</span>}
+                  <span className="absolute -bottom-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-md text-[10px] font-bold font-mono text-white"
+                    style={{ background: 'var(--accent)', border: '2px solid var(--card)' }}>
+                    {SLOT_KEY[ab.slot] ?? '?'}
+                  </span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[13.5px] font-semibold">{ab.displayName}</div>
+                  <p className="text-[12.5px] leading-relaxed mt-0.5" style={{ color: 'var(--text2)' }}>{ab.description}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* How to play */}
+        <div className="col-span-2 space-y-4">
+          <div className="card p-5">
+            <h3 className="font-display text-[14px] font-bold uppercase tracking-wide mb-3">Comment le jouer</h3>
+            <p className="text-[13px] leading-relaxed mb-4" style={{ color: 'var(--text2)' }}>{summary}</p>
+            <div className="space-y-2.5">
+              {tips.map((t, i) => (
+                <div key={i} className="flex gap-2.5 items-start">
+                  <svg viewBox="0 0 16 16" fill="none" stroke="var(--accent2)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 shrink-0 mt-0.5">
+                    <path d="M3 8l4 4 6-8" />
+                  </svg>
+                  <span className="text-[12.5px] leading-relaxed" style={{ color: 'var(--text2)' }}>{t}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {bestMaps.length > 0 && (
+            <div className="card p-5">
+              <h3 className="font-display text-[14px] font-bold uppercase tracking-wide mb-3">Meilleures maps</h3>
+              <div className="flex flex-wrap gap-2">
+                {bestMaps.map(m => (
+                  <span key={m} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold"
+                    style={{ background: 'var(--raised)', color: 'var(--text1)' }}>{m}</span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Counters & synergies */}
+      {matchup && (
+        <div className="grid grid-cols-2 gap-4">
+          <div className="card p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="h-2 w-2 rounded-full" style={{ background: 'var(--red)' }} />
+              <h3 className="font-display text-[14px] font-bold uppercase tracking-wide">Faible face à</h3>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              {matchup.weakTo.map(n => (
+                <button key={n} onClick={() => onSelect(n)}
+                  className="flex items-center gap-2 px-2.5 py-2 rounded-xl transition hover:bg-white/5"
+                  style={{ background: 'var(--raised)' }}>
+                  <AgentPortrait name={n} icon={apiAgents[n]?.displayIcon} size={28} />
+                  <span className="text-[12px] font-semibold truncate">{n}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="card p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="h-2 w-2 rounded-full" style={{ background: 'var(--green)' }} />
+              <h3 className="font-display text-[14px] font-bold uppercase tracking-wide">Synergies</h3>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              {matchup.synergy.map(n => (
+                <button key={n} onClick={() => onSelect(n)}
+                  className="flex items-center gap-2 px-2.5 py-2 rounded-xl transition hover:bg-white/5"
+                  style={{ background: 'var(--raised)' }}>
+                  <AgentPortrait name={n} icon={apiAgents[n]?.displayIcon} size={28} />
+                  <span className="text-[12px] font-semibold truncate">{n}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </motion.div>
+  );
+};
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 const ValorantStatsPage: React.FC = () => {
@@ -159,10 +439,11 @@ const ValorantStatsPage: React.FC = () => {
   const [proLoading,   setProLoading]   = useState(false);
   const [proError,     setProError]     = useState<string | null>(null);
   const [selectedAgent, setSelectedAgent] = useState<string>('Jett');
+  const [detailAgent,   setDetailAgent]   = useState<string | null>(null);
 
   // Fetch real agent icons from valorant-api.com (no key needed)
   useEffect(() => {
-    fetch('https://valorant-api.com/v1/agents?isPlayableCharacter=true')
+    fetch('https://valorant-api.com/v1/agents?isPlayableCharacter=true&language=fr-FR')
       .then(r => r.json())
       .then(({ data }: { data: ValorantAgent[] }) => {
         const map: Record<string, ValorantAgent> = {};
@@ -242,6 +523,22 @@ const ValorantStatsPage: React.FC = () => {
       </div>
     );
   };
+
+  if (detailAgent) {
+    return (
+      <div className="page-enter p-6">
+        <AgentDetail
+          name={detailAgent}
+          stat={AGENT_STATS.find(a => a.name === detailAgent)}
+          apiAgent={apiAgents[detailAgent]}
+          matchup={MATCHUP_DATA[detailAgent]}
+          apiAgents={apiAgents}
+          onBack={() => setDetailAgent(null)}
+          onSelect={(n) => setDetailAgent(n)}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-5">
@@ -333,8 +630,16 @@ const ValorantStatsPage: React.FC = () => {
                   <path d="m14 14 3 3" strokeLinecap="round"/>
                 </svg>
                 <input value={search} onChange={e => setSearch(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && filteredAgents.length > 0) setDetailAgent(filteredAgents[0].name); }}
                   placeholder="Rechercher un agent..."
-                  className="input pl-9 pr-4 py-2 w-56 text-sm rounded-xl" />
+                  className="input pl-9 pr-9 py-2 w-64 text-sm rounded-xl" />
+                {search && (
+                  <button onClick={() => setSearch('')}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-md transition hover:bg-white/10"
+                    style={{ color: 'var(--text3)' }} title="Effacer">
+                    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-3.5 w-3.5"><path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round"/></svg>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -375,7 +680,8 @@ const ValorantStatsPage: React.FC = () => {
                     const isLast  = i === filteredAgents.length - 1;
                     return (
                       <tr key={agent.name}
-                        className="transition-colors hover:bg-white/[0.025]"
+                        onClick={() => setDetailAgent(agent.name)}
+                        className="group cursor-pointer transition-colors hover:bg-white/[0.04]"
                         style={{ borderBottom: isLast ? 'none' : '1px solid var(--border)' }}>
                         <td className="px-4 py-3 text-sm font-medium w-10" style={{ color: 'var(--text3)' }}>
                           {i + 1}
@@ -383,7 +689,11 @@ const ValorantStatsPage: React.FC = () => {
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-3">
                             <AgentPortrait name={agent.name} icon={icon} size={36} />
-                            <span className="text-sm font-semibold whitespace-nowrap">{agent.name}</span>
+                            <span className="text-sm font-semibold whitespace-nowrap group-hover:text-[var(--accent2)] transition-colors">{agent.name}</span>
+                            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"
+                              className="h-3.5 w-3.5 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: 'var(--accent2)' }}>
+                              <path d="M6 4l4 4-4 4" />
+                            </svg>
                           </div>
                         </td>
                         <td className="px-4 py-3"><RoleBadge role={agent.role} /></td>
