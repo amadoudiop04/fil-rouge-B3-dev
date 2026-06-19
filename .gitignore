@@ -57,9 +57,10 @@ typings/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
+# dotenv environment variables file (.env.example reste suivi comme modèle)
 .env
-.env.test
+.env.*
+!.env.example
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -90,3 +91,23 @@ typings/
 
 # Electron-Forge
 out/
+
+# ── Build output (Vite) — contient des secrets inlinés, ne jamais committer ──
+dist/
+
+# ── Éditeurs / IDE ──
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ──
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# ── Secrets divers ──
+*.pem
+*.key
+secrets.json
+.env.backup
