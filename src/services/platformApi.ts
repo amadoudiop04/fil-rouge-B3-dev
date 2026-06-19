@@ -10,6 +10,42 @@ import type {
   StatsRecord,
 } from '../types/api';
 
+export interface AdminUser {
+  id: number;
+  username: string;
+  email: string;
+  created_at?: string;
+  riot_id?: string | null;
+  rank_label?: string | null;
+  show_in_lfg?: number;
+  is_admin?: number;
+}
+
+export interface AdminOrderItem { name: string; quantity: number; price: number; }
+export interface AdminOrder {
+  id: number;
+  user_id: number | null;
+  username: string | null;
+  email: string | null;
+  total_ttc: number;
+  payment_method: string;
+  status: string;
+  created_at: string;
+  items: AdminOrderItem[];
+}
+
+export interface AdminOverviewResponse {
+  success: boolean;
+  error?: string;
+  metrics?: {
+    users: number; admins: number; lfg: number;
+    products: number; orders: number; revenue: number; stock: number;
+  };
+  recentUsers?: Array<{ id: number; username: string; email: string; created_at: string; is_admin: number }>;
+  recentOrders?: Array<{ id: number; username: string | null; total_ttc: number; payment_method: string; status: string; created_at: string }>;
+  signups?: Array<{ day: string; count: number }>;
+}
+
 interface BridgeApi {
   login: (email: string, password: string) => Promise<AuthResponse>;
   register: (username: string, email: string, password: string) => Promise<AuthResponse>;
@@ -259,6 +295,10 @@ export const platformApi = {
   },
 
   async getProducts(): Promise<{ success: boolean; products?: ProductRecord[]; error?: string }> {
+    const apiResponse = await callApi<{ success: boolean; products?: ProductRecord[]; error?: string }>('/products');
+    if (apiResponse && apiResponse.success && apiResponse.products && apiResponse.products.length > 0) {
+      return apiResponse;
+    }
     const bridge = getBridge();
     if (bridge) {
       return bridge.getProducts();
@@ -267,6 +307,14 @@ export const platformApi = {
   },
 
   async createOrder(orderData: CreateOrderPayload): Promise<{ success: boolean; orderId?: number; error?: string }> {
+    const apiResponse = await callApi<{ success: boolean; orderId?: number; error?: string }>('/orders', {
+      method: 'POST',
+      body: JSON.stringify(orderData),
+    });
+    if (apiResponse) {
+      return apiResponse;
+    }
+
     const bridge = getBridge();
     if (bridge) {
       return bridge.createOrder(orderData);
@@ -286,6 +334,65 @@ export const platformApi = {
 
     saveOrders([...orders, nextOrder]);
     return { success: true, orderId: nextId };
+  },
+
+  // ── Admin ──────────────────────────────────────────────────────────────────
+  async adminOverview(): Promise<AdminOverviewResponse> {
+    const r = await callApi<AdminOverviewResponse>('/admin/overview');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminGetUsers(): Promise<{ success: boolean; users?: AdminUser[]; error?: string }> {
+    const r = await callApi<{ success: boolean; users?: AdminUser[]; error?: string }>('/admin/users');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminUpdateUser(id: number, updates: { username?: string; email?: string; isAdmin?: boolean }) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/users/${id}`, {
+      method: 'PUT', body: JSON.stringify(updates),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminDeleteUser(id: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/users/${id}`, { method: 'DELETE' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminGetProducts(): Promise<{ success: boolean; products?: ProductRecord[]; error?: string }> {
+    const r = await callApi<{ success: boolean; products?: ProductRecord[]; error?: string }>('/admin/products');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminCreateProduct(p: Partial<ProductRecord>) {
+    const r = await callApi<{ success: boolean; id?: number; error?: string }>('/admin/products', {
+      method: 'POST', body: JSON.stringify(p),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminUpdateProduct(id: number, p: Partial<ProductRecord>) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/products/${id}`, {
+      method: 'PUT', body: JSON.stringify(p),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminDeleteProduct(id: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/products/${id}`, { method: 'DELETE' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminGetOrders(): Promise<{ success: boolean; orders?: AdminOrder[]; error?: string }> {
+    const r = await callApi<{ success: boolean; orders?: AdminOrder[]; error?: string }>('/admin/orders');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminUpdateOrder(id: number, status: string) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/orders/${id}`, {
+      method: 'PUT', body: JSON.stringify({ status }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
   },
 
   async getLfgPlayers(): Promise<{ success: boolean; players?: unknown[]; error?: string }> {

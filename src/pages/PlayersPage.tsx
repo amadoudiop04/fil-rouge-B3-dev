@@ -358,10 +358,10 @@ const PlayersPage: React.FC = () => {
               initial={{ opacity:0, y:8 }} animate={{ opacity:1, y:0 }}
               transition={{ ...sp, delay:i*0.06 }}
               className="card flex flex-col gap-4 p-5 card-hover overflow-hidden"
-              style={'featured' in s && s.featured ? { borderColor:'rgba(124,58,237,0.4)' } : undefined}>
+              style={'featured' in s && s.featured ? { borderColor:'rgba(47,129,247,0.4)' } : undefined}>
               {'featured' in s && s.featured && (
                 <span className="self-start rounded-full px-2.5 py-0.5 text-[10px] font-bold"
-                  style={{ background:'rgba(124,58,237,0.15)', color:'var(--violet2)' }}>
+                  style={{ background:'rgba(47,129,247,0.15)', color:'var(--violet2)' }}>
                   ✦ Recommandé
                 </span>
               )}

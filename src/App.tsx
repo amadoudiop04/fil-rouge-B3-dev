@@ -15,6 +15,8 @@ import { PaymentPage } from './pages/PaymentPage';
 import ShopPage from './pages/Shop';
 import PanierPage from './pages/PanierPage';
 import ValorantStatsPage from './pages/ValorantStatsPage';
+import PatchNotesPage from './pages/PatchNotesPage';
+import AdminPage from './pages/AdminPage';
 import { motion } from 'framer-motion';
 
 export interface CartItem {
@@ -26,6 +28,8 @@ const PAGE_TITLES: Record<string, string> = {
   home:             'Accueil',
   stats:            'Statistiques',
   agentStats:       'Agents & Stats Valorant',
+  patchNotes:       'Patch Notes',
+  admin:            'Administration',
   profile:          'Profil',
   settings:         'Paramètres',
   tournaments:      'Tournois',
@@ -84,6 +88,8 @@ const AppContent: React.FC = () => {
           {page === 'home'        && <HomePage onNavigate={setPage} />}
           {page === 'stats'       && <StatsPage user={user} onNavigate={setPage} />}
           {page === 'agentStats'  && <ValorantStatsPage />}
+          {page === 'patchNotes'  && <PatchNotesPage />}
+          {page === 'admin'       && <AdminPage />}
           {page === 'profile'     && <ProfilePage user={user} onLogout={logout} onNavigate={setPage} />}
           {page === 'settings'    && <SettingsPage user={user} onNavigate={setPage} />}
           {page === 'tournaments'       && <TournamentPage onNavigate={setPage} />}

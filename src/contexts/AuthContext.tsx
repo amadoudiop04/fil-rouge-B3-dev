@@ -22,6 +22,7 @@ export interface User {
   playtimes?: string[];
   showInLfg?: boolean;
   lfgStatus?: 'lfg' | 'busy';
+  isAdmin?: boolean;
 }
 
 interface AuthContextType {
@@ -58,6 +59,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     playtimes?: string[] | null;
     show_in_lfg?: number;
     lfg_status?: string;
+    is_admin?: number;
   }): User => ({
     id: apiUser.id.toString(),
     email: apiUser.email,
@@ -77,6 +79,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     playtimes: apiUser.playtimes ?? undefined,
     showInLfg: apiUser.show_in_lfg === 1,
     lfgStatus: (apiUser.lfg_status as 'lfg' | 'busy') ?? 'lfg',
+    isAdmin: apiUser.is_admin === 1,
   });
 
   // Charger l'utilisateur actuel au montage

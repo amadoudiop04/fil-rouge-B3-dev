@@ -71,7 +71,7 @@ const ShopPage: React.FC<ShopPageProps> = ({ onNavigate, cartItems = [], onCartU
           <button key={cat} onClick={() => setActive(cat)}
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-[13px] font-medium transition"
             style={{
-              background: activeCategory === cat ? 'rgba(124,58,237,0.12)' : 'transparent',
+              background: activeCategory === cat ? 'rgba(47,129,247,0.12)' : 'transparent',
               color: activeCategory === cat ? 'var(--violet2)' : 'var(--text2)',
             }}>
             <span>{cat}</span>
@@ -91,7 +91,7 @@ const ShopPage: React.FC<ShopPageProps> = ({ onNavigate, cartItems = [], onCartU
             <button key={s.id} onClick={() => setSort(s.id as any)}
               className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-[13px] font-medium transition"
               style={{
-                background: sort === s.id ? 'rgba(124,58,237,0.12)' : 'transparent',
+                background: sort === s.id ? 'rgba(47,129,247,0.12)' : 'transparent',
                 color: sort === s.id ? 'var(--violet2)' : 'var(--text2)',
               }}>
               {s.label}

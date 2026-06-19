@@ -58,119 +58,147 @@ const IconCrosshair = ({ active }: { active: boolean }) => active
   ? <svg viewBox="0 0 20 20" fill="currentColor" className="h-[18px] w-[18px]"><path fillRule="evenodd" d="M10 2a8 8 0 100 16A8 8 0 0010 2zm0 1.5a6.5 6.5 0 110 13 6.5 6.5 0 010-13zm0 3a3.5 3.5 0 100 7 3.5 3.5 0 000-7zm0 1.5a2 2 0 110 4 2 2 0 010-4z"/></svg>
   : <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" className="h-[18px] w-[18px]"><circle cx="10" cy="10" r="8"/><circle cx="10" cy="10" r="3"/><path d="M10 2v3M10 15v3M2 10h3M15 10h3"/></svg>;
 
-const NAV_MAIN = [
-  { id: 'home',              label: 'Accueil',          Icon: IconHome       },
-  { id: 'stats',             label: 'Statistiques',     Icon: IconStats      },
-  { id: 'agentStats',        label: 'Agents & Stats',   Icon: IconCrosshair  },
-  { id: 'tournaments',       label: 'Tournois',          Icon: IconTrophy     },
-  { id: 'players',           label: 'Joueurs',           Icon: IconPlayers    },
-  { id: 'createTournament',  label: 'Créer un tournoi', Icon: IconCreate     },
-  { id: 'shop',              label: 'Boutique',          Icon: IconShop       },
-] as const;
+const IconPatch = ({ active }: { active: boolean }) => active
+  ? <svg viewBox="0 0 20 20" fill="currentColor" className="h-[18px] w-[18px]"><path fillRule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm0 2h4v3a1 1 0 001 1h3v8H6V4zm6 0l2.5 2.5H12V4zM8 9a1 1 0 000 2h4a1 1 0 000-2H8zm0 3a1 1 0 000 2h2a1 1 0 000-2H8z"/></svg>
+  : <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]"><path d="M6 2h5.586L16 6.414V17a1 1 0 01-1 1H6a1 1 0 01-1-1V3a1 1 0 011-1z"/><path d="M11 2v5h5M8 9h4M8 12h2"/></svg>;
 
-const NAV_ACCOUNT = [
-  { id: 'profile',  label: 'Profil',      Icon: IconProfile  },
-  { id: 'settings', label: 'Paramètres',  Icon: IconSettings },
-] as const;
+const IconAdmin = ({ active }: { active: boolean }) => active
+  ? <svg viewBox="0 0 20 20" fill="currentColor" className="h-[18px] w-[18px]"><path fillRule="evenodd" d="M9.661 2.237a.531.531 0 01.678 0 11.947 11.947 0 007.078 2.749.5.5 0 01.479.425c.069.52.104 1.05.104 1.59 0 5.162-3.26 9.563-7.834 11.256a.48.48 0 01-.332 0C5.26 16.564 2 12.163 2 7c0-.538.035-1.069.104-1.589a.5.5 0 01.48-.425 11.947 11.947 0 007.077-2.75zm4.196 5.954a.75.75 0 00-1.214-.882l-3.236 4.53-1.55-1.55a.75.75 0 00-1.06 1.061l2.171 2.172a.75.75 0 001.137-.089l3.752-5.252z"/></svg>
+  : <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" className="h-[18px] w-[18px]"><path d="M10 2.5c-2 1.6-4.2 2.4-6.5 2.5C3.3 5.7 3.3 6.3 3.3 7c0 4.6 2.8 8.4 6.7 9.8 3.9-1.4 6.7-5.2 6.7-9.8 0-.7 0-1.3-.2-2-2.3-.1-4.5-.9-6.5-2.5z"/><path d="M7.5 9.5l1.8 1.8 3-3.5"/></svg>;
+
+interface NavGroup {
+  label: string;
+  items: ReadonlyArray<{ id: string; label: string; Icon: React.FC<{ active: boolean }> }>;
+  adminOnly?: boolean;
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: 'Jouer',
+    items: [
+      { id: 'home',       label: 'Accueil',        Icon: IconHome      },
+      { id: 'stats',      label: 'Mes stats',      Icon: IconStats     },
+      { id: 'agentStats', label: 'Agents & méta', Icon: IconCrosshair },
+      { id: 'players',    label: 'Joueurs',        Icon: IconPlayers   },
+    ],
+  },
+  {
+    label: 'Compétition',
+    items: [
+      { id: 'tournaments',      label: 'Tournois',          Icon: IconTrophy },
+      { id: 'createTournament', label: 'Créer un tournoi', Icon: IconCreate },
+    ],
+  },
+  {
+    label: 'Boutique & infos',
+    items: [
+      { id: 'shop',       label: 'Boutique',     Icon: IconShop  },
+      { id: 'patchNotes', label: 'Patch notes',  Icon: IconPatch },
+    ],
+  },
+  {
+    label: 'Compte',
+    items: [
+      { id: 'profile',  label: 'Profil',      Icon: IconProfile  },
+      { id: 'settings', label: 'Paramètres', Icon: IconSettings },
+    ],
+  },
+  {
+    label: 'Administration',
+    adminOnly: true,
+    items: [
+      { id: 'admin', label: 'Panneau admin', Icon: IconAdmin },
+    ],
+  },
+];
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentPage, onPageChange, user, onLogout, cartCount = 0 }) => {
   const isActive = (id: string) =>
     currentPage === id || (id === 'shop' && currentPage === 'panier');
+
+  const groups = NAV_GROUPS.filter(g => !g.adminOnly || user.isAdmin);
 
   return (
     <aside
       className="flex flex-col h-full shrink-0"
       style={{
         width: 'var(--sidebar)',
-        background: 'var(--surface)',
+        background: 'linear-gradient(180deg, #0b203f 0%, var(--surface) 100%)',
         borderRight: '1px solid var(--border)',
       }}
     >
-      {/* Logo */}
-      <div className="flex h-[52px] shrink-0 items-center gap-2.5 px-4"
+      {/* Brand block */}
+      <div className="flex shrink-0 items-center gap-3 px-5 py-4"
         style={{ borderBottom: '1px solid var(--border)' }}>
-        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg" style={{ background: 'var(--violet)' }}>
+        <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl glow-accent"
+          style={{ background: 'linear-gradient(150deg, var(--accent2), var(--accent))' }}>
           <Logo />
         </div>
-        <span className="text-[14px] font-bold tracking-tight">B3 Esport</span>
+        <div className="leading-none">
+          <div className="font-display text-[19px] font-bold tracking-wide">
+            B3 <span className="text-gradient">ESPORT</span>
+          </div>
+          <div className="mt-1 text-[9.5px] font-semibold uppercase tracking-[0.22em]" style={{ color: 'var(--text3)' }}>
+            Valorant Hub
+          </div>
+        </div>
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 overflow-y-auto scrollbar-hide px-2 py-3">
-
-        <div className="space-y-0.5">
-          {NAV_MAIN.map(({ id, label, Icon }) => {
-            const active = isActive(id);
-            const showBadge = id === 'shop' && cartCount > 0;
-            return (
-              <motion.button
-                key={id}
-                whileTap={{ scale: 0.97 }}
-                onClick={() => onPageChange(id)}
-                className={`nav-item ${active ? 'active' : ''}`}
-              >
-                <Icon active={active} />
-                <span className="flex-1 text-left">{label}</span>
-                {showBadge && (
-                  <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white"
-                    style={{ background: 'var(--red)' }}>
-                    {cartCount > 9 ? '9+' : cartCount}
-                  </span>
-                )}
-                {active && (
-                  <motion.div layoutId="sidebarDot"
-                    className="h-1.5 w-1.5 rounded-full"
-                    style={{ background: 'var(--violet2)' }}
-                    transition={sp}
-                  />
-                )}
-              </motion.button>
-            );
-          })}
-        </div>
-
-        <div className="mt-5">
-          <p className="mb-1.5 px-2 text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text3)' }}>
-            Compte
-          </p>
-          <div className="space-y-0.5">
-            {NAV_ACCOUNT.map(({ id, label, Icon }) => {
-              const active = currentPage === id;
-              return (
-                <motion.button
-                  key={id}
-                  whileTap={{ scale: 0.97 }}
-                  onClick={() => onPageChange(id)}
-                  className={`nav-item ${active ? 'active' : ''}`}
-                >
-                  <Icon />
-                  <span className="flex-1 text-left">{label}</span>
-                  {active && (
-                    <motion.div layoutId="sidebarDot"
-                      className="h-1.5 w-1.5 rounded-full"
-                      style={{ background: 'var(--violet2)' }}
-                      transition={sp}
-                    />
-                  )}
-                </motion.button>
-              );
-            })}
+      <nav className="flex-1 overflow-y-auto scrollbar-hide px-3 py-4 space-y-5">
+        {groups.map(group => (
+          <div key={group.label}>
+            <p className="nav-group-label mb-2 px-2 flex items-center gap-2">
+              {group.adminOnly && (
+                <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent2)', boxShadow: '0 0 8px var(--accent2)' }} />
+              )}
+              {group.label}
+            </p>
+            <div className="space-y-1">
+              {group.items.map(({ id, label, Icon }) => {
+                const active = isActive(id);
+                const showBadge = id === 'shop' && cartCount > 0;
+                return (
+                  <motion.button
+                    key={id}
+                    whileTap={{ scale: 0.97 }}
+                    onClick={() => onPageChange(id)}
+                    className={`nav-item ${active ? 'active' : ''}`}
+                  >
+                    <Icon active={active} />
+                    <span className="flex-1 text-left">{label}</span>
+                    {showBadge && (
+                      <span className="flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold text-white"
+                        style={{ background: 'var(--red)' }}>
+                        {cartCount > 9 ? '9+' : cartCount}
+                      </span>
+                    )}
+                  </motion.button>
+                );
+              })}
+            </div>
           </div>
-        </div>
-
+        ))}
       </nav>
 
       {/* User */}
-      <div className="shrink-0 px-2 py-2" style={{ borderTop: '1px solid var(--border)' }}>
-        <div className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 transition hover:bg-white/5">
+      <div className="shrink-0 px-3 py-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <button onClick={() => onPageChange('profile')}
+          className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-white/5">
           <Avatar username={user.username} size="sm" showBorder={false} />
           <div className="flex-1 min-w-0">
-            <p className="truncate text-[13px] font-semibold">{user.username}</p>
+            <p className="truncate text-[13px] font-semibold flex items-center gap-1.5">
+              {user.username}
+              {user.isAdmin && (
+                <span className="rounded px-1.5 py-px text-[9px] font-bold tracking-wider"
+                  style={{ background: 'rgba(70,194,255,0.15)', color: 'var(--accent2)' }}>ADMIN</span>
+              )}
+            </p>
             <p className="truncate text-[11px]" style={{ color: 'var(--text3)' }}>{user.email}</p>
           </div>
-        </div>
+        </button>
         <motion.button whileTap={{ scale: 0.97 }} onClick={onLogout}
-          className="mt-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-[12px] font-medium transition hover:bg-white/5"
+          className="mt-1.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[12px] font-medium transition hover:bg-white/5"
           style={{ color: 'var(--text3)' }}>
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.6} className="h-3.5 w-3.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M11 3h2a1 1 0 011 1v8a1 1 0 01-1 1h-2M8 10l3-3-3-3M11 7H4"/>

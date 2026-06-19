@@ -26,7 +26,7 @@ const sessions = new Map();
 const setCors = (res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
 };
 
 const sendJson = (res, statusCode, payload) => {
@@ -80,9 +80,10 @@ const sanitizeUser = (row) => ({
   playtimes: parseJsonCol(row.playtimes),
   show_in_lfg: row.show_in_lfg ? 1 : 0,
   lfg_status: row.lfg_status || 'lfg',
+  is_admin: row.is_admin ? 1 : 0,
 });
 
-const USER_COLS = 'id, username, email, riot_id, tag_line, created_at, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, show_in_lfg, lfg_status';
+const USER_COLS = 'id, username, email, riot_id, tag_line, created_at, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, show_in_lfg, lfg_status, is_admin';
 
 const getUserByEmail = async (email) => {
   const [rows] = await pool.execute(
@@ -100,7 +101,24 @@ const getUserById = async (id) => {
   return rows.length > 0 ? rows[0] : null;
 };
 
+const ADMIN_EMAIL = 'admin@b3esport.gg';
+const ADMIN_PASSWORD = 'Admin2026!';
+
 const initDb = async () => {
+  // 1. Make sure the users table exists (fresh DB safety net)
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS users (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      username VARCHAR(50) NOT NULL,
+      email VARCHAR(100) NOT NULL UNIQUE,
+      password_hash VARCHAR(255) NOT NULL,
+      riot_id VARCHAR(50) DEFAULT NULL,
+      tag_line VARCHAR(10) DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+
+  // 2. Add personalization + admin columns (ignored if they already exist)
   const cols = [
     "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN discord VARCHAR(100) DEFAULT NULL",
@@ -114,11 +132,90 @@ const initDb = async () => {
     "ALTER TABLE users ADD COLUMN playtimes JSON DEFAULT NULL",
     "ALTER TABLE users ADD COLUMN show_in_lfg TINYINT(1) NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN lfg_status VARCHAR(20) NOT NULL DEFAULT 'lfg'",
+    "ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0",
   ];
   for (const sql of cols) {
     try { await pool.execute(sql); } catch { /* column already exists */ }
   }
+
+  // 3. Shop tables (create if missing)
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS products (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(100) DEFAULT NULL,
+      price DECIMAL(10,2) DEFAULT NULL,
+      category VARCHAR(50) DEFAULT NULL,
+      image_url VARCHAR(500) DEFAULT NULL,
+      stock_quantity INT(11) DEFAULT 0
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS orders (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      user_id INT(11) DEFAULT NULL,
+      total_ttc DECIMAL(10,2) DEFAULT NULL,
+      payment_method ENUM('Card','PayPal','Crypto') DEFAULT NULL,
+      status ENUM('Pending','Paid','Shipped','Cancelled') DEFAULT 'Paid',
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS order_items (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      order_id INT(11) DEFAULT NULL,
+      product_id INT(11) DEFAULT NULL,
+      quantity INT(11) DEFAULT NULL,
+      price_at_purchase DECIMAL(10,2) DEFAULT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  // 'Cancelled' may be missing from an older enum — widen it
+  try {
+    await pool.execute("ALTER TABLE orders MODIFY status ENUM('Pending','Paid','Shipped','Cancelled') DEFAULT 'Paid'");
+  } catch { /* ok */ }
+
+  // 4. Seed a few products if the table is empty
+  const [[{ cnt: productCount }]] = await pool.query('SELECT COUNT(*) AS cnt FROM products');
+  if (productCount === 0) {
+    await pool.query(
+      `INSERT INTO products (name, price, category, image_url, stock_quantity) VALUES ?`,
+      [[
+        ['Maillot Pro B3 2026',        69.99, 'MAILLOTS',    'https://images.unsplash.com/photo-1521572163474-6864f9cf17ab?w=600', 30],
+        ['Hoodie Tactical Cobalt',     74.99, 'SWEATS',      'https://images.unsplash.com/photo-1556821840-3a63f95609a7?w=600',   25],
+        ['Casquette Snapback Azure',   29.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1588850561407-ed78c282e89b?w=600', 50],
+        ['Tapis XXL Pro RGB',          44.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1625225233840-695456021cde?w=600', 60],
+        ['Gourde Steel B3',            22.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=600', 75],
+        ['Sac à dos Premium',      89.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=600',   18],
+      ]]
+    );
+  }
+
+  // 5. Seed the admin account if it does not exist
+  const existingAdmin = await getUserByEmail(ADMIN_EMAIL);
+  if (!existingAdmin) {
+    const hash = await bcrypt.hash(ADMIN_PASSWORD, SALT_ROUNDS);
+    await pool.execute(
+      'INSERT INTO users (username, email, password_hash, is_admin) VALUES (?, ?, ?, 1)',
+      ['Admin B3', ADMIN_EMAIL, hash]
+    );
+    console.log(`Admin account created → ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
+  } else if (!existingAdmin.is_admin) {
+    await pool.execute('UPDATE users SET is_admin = 1 WHERE id = ?', [existingAdmin.id]);
+  }
+
   console.log('DB schema ready');
+};
+
+const getSessionUser = async (req) => {
+  const userId = getSessionUserId(req);
+  if (!userId) return null;
+  return getUserById(userId);
+};
+
+const requireAdmin = async (req, res) => {
+  const user = await getSessionUser(req);
+  if (!user) { sendJson(res, 401, { success: false, error: 'Non authentifie' }); return null; }
+  if (!user.is_admin) { sendJson(res, 403, { success: false, error: 'Acces reserve aux administrateurs' }); return null; }
+  return user;
 };
 
 const getBearerToken = (req) => {
@@ -577,6 +674,264 @@ const server = http.createServer(async (req, res) => {
         lfgStatus: r.lfg_status || 'lfg',
       }));
       sendJson(res, 200, { success: true, players });
+      return;
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  SHOP — public
+    // ════════════════════════════════════════════════════════
+
+    // GET /products — public catalogue from DB
+    if (req.method === 'GET' && url.pathname === '/products') {
+      const [rows] = await pool.query(
+        'SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id ASC'
+      );
+      const products = rows.map(r => ({
+        id: Number(r.id),
+        name: r.name,
+        price: Number(r.price),
+        category: r.category,
+        image_url: r.image_url,
+        stock_quantity: Number(r.stock_quantity),
+      }));
+      sendJson(res, 200, { success: true, products });
+      return;
+    }
+
+    // POST /orders — create an order (authenticated)
+    if (req.method === 'POST' && url.pathname === '/orders') {
+      const sessionUserId = getSessionUserId(req);
+      if (!sessionUserId) { sendJson(res, 401, { success: false, error: 'Non authentifie' }); return; }
+
+      const body = await readJsonBody(req);
+      const totalTtc = Number(body.total_ttc || 0);
+      const method = ['Card', 'PayPal', 'Crypto'].includes(body.payment_method) ? body.payment_method : 'Card';
+      const items = Array.isArray(body.items) ? body.items : [];
+
+      const [orderResult] = await pool.execute(
+        'INSERT INTO orders (user_id, total_ttc, payment_method, status) VALUES (?, ?, ?, ?)',
+        [sessionUserId, totalTtc, method, 'Paid']
+      );
+      const orderId = orderResult.insertId;
+
+      for (const it of items) {
+        const pid = Number(it.product_id);
+        const qty = Number(it.quantity) || 1;
+        const price = Number(it.price_at_purchase) || 0;
+        if (!pid) continue;
+        await pool.execute(
+          'INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)',
+          [orderId, pid, qty, price]
+        );
+        await pool.execute(
+          'UPDATE products SET stock_quantity = GREATEST(stock_quantity - ?, 0) WHERE id = ?',
+          [qty, pid]
+        );
+      }
+
+      sendJson(res, 201, { success: true, orderId });
+      return;
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  ADMIN — protected (is_admin required)
+    // ════════════════════════════════════════════════════════
+
+    // GET /admin/overview — dashboard metrics
+    if (req.method === 'GET' && url.pathname === '/admin/overview') {
+      if (!(await requireAdmin(req, res))) return;
+
+      const [[{ users }]]    = await pool.query('SELECT COUNT(*) AS users FROM users');
+      const [[{ admins }]]   = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+      const [[{ lfg }]]      = await pool.query('SELECT COUNT(*) AS lfg FROM users WHERE show_in_lfg = 1');
+      const [[{ products }]] = await pool.query('SELECT COUNT(*) AS products FROM products');
+      const [[{ orders }]]   = await pool.query('SELECT COUNT(*) AS orders FROM orders');
+      const [[{ revenue }]]  = await pool.query("SELECT COALESCE(SUM(total_ttc),0) AS revenue FROM orders WHERE status != 'Cancelled'");
+      const [[{ stock }]]    = await pool.query('SELECT COALESCE(SUM(stock_quantity),0) AS stock FROM products');
+
+      const [recentUsers] = await pool.query(
+        'SELECT id, username, email, created_at, is_admin FROM users ORDER BY id DESC LIMIT 5'
+      );
+      const [recentOrders] = await pool.query(`
+        SELECT o.id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username
+        FROM orders o LEFT JOIN users u ON u.id = o.user_id
+        ORDER BY o.id DESC LIMIT 6
+      `);
+      const [signups] = await pool.query(`
+        SELECT DATE(created_at) AS day, COUNT(*) AS count
+        FROM users GROUP BY DATE(created_at) ORDER BY day DESC LIMIT 7
+      `);
+
+      sendJson(res, 200, {
+        success: true,
+        metrics: {
+          users: Number(users), admins: Number(admins), lfg: Number(lfg),
+          products: Number(products), orders: Number(orders),
+          revenue: Number(revenue), stock: Number(stock),
+        },
+        recentUsers,
+        recentOrders: recentOrders.map(o => ({ ...o, total_ttc: Number(o.total_ttc) })),
+        signups: signups.reverse(),
+      });
+      return;
+    }
+
+    // GET /admin/users — list all users
+    if (req.method === 'GET' && url.pathname === '/admin/users') {
+      if (!(await requireAdmin(req, res))) return;
+      const [rows] = await pool.query(`SELECT ${USER_COLS} FROM users ORDER BY id DESC`);
+      sendJson(res, 200, { success: true, users: rows.map(sanitizeUser) });
+      return;
+    }
+
+    // PUT /admin/users/:id — edit a user
+    const adminUserPut = url.pathname.match(/^\/admin\/users\/(\d+)$/);
+    if (req.method === 'PUT' && adminUserPut) {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const targetId = Number(adminUserPut[1]);
+      const body = await readJsonBody(req);
+
+      const target = await getUserById(targetId);
+      if (!target) { sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' }); return; }
+
+      const updates = {};
+      if (body.username !== undefined) updates.username = String(body.username).trim() || target.username;
+      if (body.email    !== undefined) updates.email    = String(body.email).trim().toLowerCase() || target.email;
+      if (body.isAdmin  !== undefined) {
+        // Prevent removing the last admin
+        if (!body.isAdmin && target.is_admin) {
+          const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+          if (admins <= 1) { sendJson(res, 400, { success: false, error: 'Impossible de retirer le dernier administrateur' }); return; }
+        }
+        updates.is_admin = body.isAdmin ? 1 : 0;
+      }
+      if (Object.keys(updates).length > 0) {
+        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+        await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), targetId]);
+      }
+      const updated = await getUserById(targetId);
+      sendJson(res, 200, { success: true, user: sanitizeUser(updated) });
+      return;
+    }
+
+    // DELETE /admin/users/:id
+    const adminUserDel = url.pathname.match(/^\/admin\/users\/(\d+)$/);
+    if (req.method === 'DELETE' && adminUserDel) {
+      const admin = await requireAdmin(req, res);
+      if (!admin) return;
+      const targetId = Number(adminUserDel[1]);
+      if (targetId === admin.id) { sendJson(res, 400, { success: false, error: 'Vous ne pouvez pas supprimer votre propre compte' }); return; }
+
+      const target = await getUserById(targetId);
+      if (!target) { sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' }); return; }
+      if (target.is_admin) {
+        const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+        if (admins <= 1) { sendJson(res, 400, { success: false, error: 'Impossible de supprimer le dernier administrateur' }); return; }
+      }
+      try {
+        await pool.execute('DELETE FROM users WHERE id = ?', [targetId]);
+      } catch {
+        sendJson(res, 409, { success: false, error: 'Suppression impossible : cet utilisateur a des donnees liees (commandes).' });
+        return;
+      }
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    // GET /admin/products
+    if (req.method === 'GET' && url.pathname === '/admin/products') {
+      if (!(await requireAdmin(req, res))) return;
+      const [rows] = await pool.query('SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id DESC');
+      sendJson(res, 200, { success: true, products: rows.map(r => ({ ...r, price: Number(r.price), stock_quantity: Number(r.stock_quantity) })) });
+      return;
+    }
+
+    // POST /admin/products
+    if (req.method === 'POST' && url.pathname === '/admin/products') {
+      if (!(await requireAdmin(req, res))) return;
+      const body = await readJsonBody(req);
+      const name = String(body.name || '').trim();
+      if (!name) { sendJson(res, 400, { success: false, error: 'Le nom est requis' }); return; }
+      const [result] = await pool.execute(
+        'INSERT INTO products (name, price, category, image_url, stock_quantity) VALUES (?, ?, ?, ?, ?)',
+        [name, Number(body.price) || 0, String(body.category || 'ACCESSOIRES'), String(body.image_url || ''), Number(body.stock_quantity) || 0]
+      );
+      sendJson(res, 201, { success: true, id: result.insertId });
+      return;
+    }
+
+    // PUT /admin/products/:id
+    const adminProdPut = url.pathname.match(/^\/admin\/products\/(\d+)$/);
+    if (req.method === 'PUT' && adminProdPut) {
+      if (!(await requireAdmin(req, res))) return;
+      const id = Number(adminProdPut[1]);
+      const body = await readJsonBody(req);
+      const [[existing]] = await pool.query('SELECT * FROM products WHERE id = ?', [id]);
+      if (!existing) { sendJson(res, 404, { success: false, error: 'Produit introuvable' }); return; }
+      await pool.execute(
+        'UPDATE products SET name = ?, price = ?, category = ?, image_url = ?, stock_quantity = ? WHERE id = ?',
+        [
+          body.name !== undefined ? String(body.name).trim() : existing.name,
+          body.price !== undefined ? Number(body.price) : existing.price,
+          body.category !== undefined ? String(body.category) : existing.category,
+          body.image_url !== undefined ? String(body.image_url) : existing.image_url,
+          body.stock_quantity !== undefined ? Number(body.stock_quantity) : existing.stock_quantity,
+          id,
+        ]
+      );
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    // DELETE /admin/products/:id
+    const adminProdDel = url.pathname.match(/^\/admin\/products\/(\d+)$/);
+    if (req.method === 'DELETE' && adminProdDel) {
+      if (!(await requireAdmin(req, res))) return;
+      const id = Number(adminProdDel[1]);
+      try {
+        await pool.execute('DELETE FROM products WHERE id = ?', [id]);
+      } catch {
+        sendJson(res, 409, { success: false, error: 'Suppression impossible : ce produit figure dans des commandes.' });
+        return;
+      }
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    // GET /admin/orders — all orders with buyer + line items
+    if (req.method === 'GET' && url.pathname === '/admin/orders') {
+      if (!(await requireAdmin(req, res))) return;
+      const [orders] = await pool.query(`
+        SELECT o.id, o.user_id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username, u.email
+        FROM orders o LEFT JOIN users u ON u.id = o.user_id
+        ORDER BY o.id DESC
+      `);
+      const [items] = await pool.query(`
+        SELECT oi.order_id, oi.quantity, oi.price_at_purchase, p.name
+        FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+      `);
+      const byOrder = {};
+      for (const it of items) {
+        (byOrder[it.order_id] ||= []).push({ name: it.name || 'Produit supprimé', quantity: it.quantity, price: Number(it.price_at_purchase) });
+      }
+      sendJson(res, 200, {
+        success: true,
+        orders: orders.map(o => ({ ...o, total_ttc: Number(o.total_ttc), items: byOrder[o.id] || [] })),
+      });
+      return;
+    }
+
+    // PUT /admin/orders/:id — change status
+    const adminOrderPut = url.pathname.match(/^\/admin\/orders\/(\d+)$/);
+    if (req.method === 'PUT' && adminOrderPut) {
+      if (!(await requireAdmin(req, res))) return;
+      const id = Number(adminOrderPut[1]);
+      const body = await readJsonBody(req);
+      const status = ['Pending', 'Paid', 'Shipped', 'Cancelled'].includes(body.status) ? body.status : null;
+      if (!status) { sendJson(res, 400, { success: false, error: 'Statut invalide' }); return; }
+      await pool.execute('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+      sendJson(res, 200, { success: true });
       return;
     }
 

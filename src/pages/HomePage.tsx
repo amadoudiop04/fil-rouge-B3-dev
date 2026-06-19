@@ -127,7 +127,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
               <p className="text-[12px] mt-0.5" style={{ color: 'var(--text3)' }}>Copenhague · $500 000</p>
             </div>
             <span className="rounded-full px-2.5 py-1 text-[11px] font-semibold"
-              style={{ background: 'rgba(124,58,237,0.12)', color: 'var(--violet2)' }}>
+              style={{ background: 'rgba(47,129,247,0.12)', color: 'var(--violet2)' }}>
               À venir
             </span>
           </div>

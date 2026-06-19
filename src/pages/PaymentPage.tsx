@@ -152,7 +152,7 @@ export const PaymentPage: React.FC<PaymentPageProps> = ({ onNavigate, cartItems 
               onClick={() => setMethod(m.id)}
               className="flex flex-col items-center gap-2.5 rounded-xl p-4 transition"
               style={{
-                background: method === m.id ? 'rgba(124,58,237,0.12)' : 'var(--surface)',
+                background: method === m.id ? 'rgba(47,129,247,0.12)' : 'var(--surface)',
                 border: `1px solid ${method === m.id ? 'var(--violet)' : 'var(--border)'}`,
                 color: method === m.id ? 'var(--violet2)' : 'var(--text2)',
               }}>

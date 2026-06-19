@@ -40,7 +40,7 @@ const formatDate = (d?: string) => {
 const SectionHeader: React.FC<{ icon: React.ReactNode; title: string; sub?: string }> = ({ icon, title, sub }) => (
   <div className="flex items-center gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
     <div className="flex h-8 w-8 items-center justify-center rounded-lg flex-shrink-0"
-      style={{ background: 'rgba(124,58,237,0.12)' }}>
+      style={{ background: 'rgba(47,129,247,0.12)' }}>
       <span style={{ color: 'var(--violet2)' }}>{icon}</span>
     </div>
     <div>
@@ -233,7 +233,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({ user, onLogout, onNavi
               <p className="mt-0.5 text-[13px]" style={{ color: 'var(--text2)' }}>{email}</p>
               {rankLabel && (
                 <span className="mt-1 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold"
-                  style={{ background: 'rgba(124,58,237,0.15)', color: 'var(--violet2)' }}>
+                  style={{ background: 'rgba(47,129,247,0.15)', color: 'var(--violet2)' }}>
                   {rankLabel}
                 </span>
               )}
