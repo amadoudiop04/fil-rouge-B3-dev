@@ -1,115 +1,135 @@
 @import "tailwindcss";
 
-/* ── Design tokens ─────────────────────────────────────────────────────── */
+/* ── Design tokens ── */
 :root {
-  --red:    #FF4654;
-  --purple: #9d4edd;
-  --cyan:   #22d3ee;
-  --bg:     #06060f;
-  --card:   #0c0c18;
-  --border: rgba(255,255,255,0.07);
+  --bg:      #09090b;
+  --surface: #111113;
+  --card:    #18181b;
+  --raised:  #27272a;
+  --border:  rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.13);
+  --violet:  #7c3aed;
+  --violet2: #8b5cf6;
+  --green:   #22c55e;
+  --red:     #ef4444;
+  --amber:   #f59e0b;
+  --blue:    #3b82f6;
+  --text1:   #fafafa;
+  --text2:   #a1a1aa;
+  --text3:   #52525b;
+  --sidebar: 240px;
 }
 
-/* ── Base ───────────────────────────────────────────────────────────────── */
+/* ── Base ── */
 *, *::before, *::after { box-sizing: border-box; }
-
 html, body, #root {
   height: 100%;
+  overflow: hidden;
   background: var(--bg);
-  color: rgba(255,255,255,0.92);
-  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--text1);
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Scrollbar ──────────────────────────────────────────────────────────── */
+/* ── Scrollbar ── */
 .scrollbar-hide::-webkit-scrollbar { display: none; }
 .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--raised); border-radius: 99px; }
 
-/* ── Glass card ─────────────────────────────────────────────────────────── */
-.glass {
-  background: rgba(255,255,255,0.025);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255,255,255,0.07);
+/* ── Card ── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
+.card-hover { transition: border-color 0.18s, box-shadow 0.18s; }
+.card-hover:hover { border-color: var(--border2); box-shadow: 0 4px 24px rgba(0,0,0,0.35); }
 
-/* ── Background grid ────────────────────────────────────────────────────── */
-.bg-grid {
-  background-image:
-    linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,.018) 1px, transparent 1px);
-  background-size: 48px 48px;
-}
+/* ── Glow ── */
+.glow-violet { box-shadow: 0 0 24px rgba(124,58,237,0.22), 0 0 60px rgba(124,58,237,0.07); }
 
-/* ── Animated background orbs ───────────────────────────────────────────── */
-@keyframes orb1 {
-  0%,100% { transform: translate(0,0) scale(1); }
-  33%  { transform: translate(60px,-50px) scale(1.12); }
-  66%  { transform: translate(-40px,70px) scale(0.88); }
+/* ── Input ── */
+.input {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text1);
+  outline: none;
+  transition: border-color 0.15s;
 }
-@keyframes orb2 {
-  0%,100% { transform: translate(0,0) scale(1); }
-  40%  { transform: translate(-80px,40px) scale(1.15); }
-  80%  { transform: translate(50px,-80px) scale(0.85); }
-}
-@keyframes orb3 {
-  0%,100% { transform: translate(0,0); }
-  50%  { transform: translate(30px,90px); }
-}
+.input:focus { border-color: rgba(124,58,237,0.55); }
+.input::placeholder { color: var(--text3); }
 
-.orb-1 { animation: orb1 28s ease-in-out infinite; }
-.orb-2 { animation: orb2 34s ease-in-out infinite; }
-.orb-3 { animation: orb3 22s ease-in-out infinite; }
-
-/* ── Scan-line shimmer (auth page only) ─────────────────────────────────── */
-@keyframes scan {
-  0%   { transform: translateY(-100%); opacity: 0.6; }
-  50%  { opacity: 0.2; }
-  100% { transform: translateY(100vh); opacity: 0; }
+/* ── Buttons ── */
+.btn-primary {
+  background: var(--violet);
+  border-radius: 8px;
+  color: white;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.15s, transform 0.1s, opacity 0.15s;
+  cursor: pointer;
 }
-.scan-line {
-  animation: scan 6s linear infinite;
-}
+.btn-primary:hover  { background: var(--violet2); }
+.btn-primary:active { transform: scale(0.97); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ── Input autofill fix ─────────────────────────────────────────────────── */
-input:-webkit-autofill,
-input:-webkit-autofill:focus {
+.btn-ghost {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s, transform 0.1s;
+  cursor: pointer;
+}
+.btn-ghost:hover  { background: rgba(255,255,255,0.08); }
+.btn-ghost:active { transform: scale(0.97); }
+
+/* ── Toggle ── */
+.toggle {
+  position: relative; width: 40px; height: 22px;
+  border-radius: 999px; background: var(--raised);
+  transition: background 0.22s; cursor: pointer; flex-shrink: 0;
+}
+.toggle.on { background: var(--violet); }
+.toggle-knob {
+  position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%; background: white;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  transition: transform 0.22s cubic-bezier(0.34,1.56,0.64,1);
+}
+.toggle.on .toggle-knob { transform: translateX(18px); }
+
+/* ── Autofill ── */
+input:-webkit-autofill, input:-webkit-autofill:focus {
   -webkit-box-shadow: 0 0 0 50px var(--card) inset;
   -webkit-text-fill-color: white;
   caret-color: white;
 }
 
-/* ── Focus ring ─────────────────────────────────────────────────────────── */
-:focus-visible {
-  outline: 2px solid rgba(255,70,84,0.55);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
+/* ── Focus ring ── */
+:focus-visible { outline: 2px solid rgba(124,58,237,0.5); outline-offset: 2px; border-radius: 6px; }
 
-/* ── Spring easing for interactive elements ─────────────────────────────── */
-button, a {
-  transition-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+/* ── Page fade-in ── */
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+.page-enter { animation: pageIn 0.22s ease both; }
 
-/* ── Glow utilities ─────────────────────────────────────────────────────── */
-.glow-red    { box-shadow: 0 0 24px rgba(255,70,84,0.35),  0 0 48px rgba(255,70,84,0.12); }
-.glow-purple { box-shadow: 0 0 24px rgba(157,78,221,0.35), 0 0 48px rgba(157,78,221,0.12); }
-.glow-cyan   { box-shadow: 0 0 24px rgba(34,211,238,0.35), 0 0 48px rgba(34,211,238,0.12); }
-
-/* ── Red accent line (Valorant style) ───────────────────────────────────── */
-.v-accent::before {
-  content: '';
-  display: inline-block;
-  width: 3px;
-  height: 1em;
-  background: var(--red);
-  margin-right: 10px;
-  vertical-align: middle;
-  border-radius: 2px;
+/* ── Nav item ── */
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px;
+  font-size: 13.5px; font-weight: 500;
+  color: var(--text3); cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  text-decoration: none; width: 100%;
 }
-
-/* ── Ping animation for live indicator ──────────────────────────────────── */
-@keyframes ping-slow {
-  75%, 100% { transform: scale(1.8); opacity: 0; }
-}
-.ping-slow { animation: ping-slow 2s cubic-bezier(0,0,0.2,1) infinite; }
+.nav-item:hover  { background: rgba(255,255,255,0.05); color: var(--text2); }
+.nav-item.active { background: rgba(124,58,237,0.14); color: var(--violet2); }
+.nav-item.active svg { color: var(--violet2); }

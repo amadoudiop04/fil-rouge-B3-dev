@@ -4,106 +4,93 @@ import { motion } from 'framer-motion';
 interface NavigationProps {
   currentPage: string;
   onPageChange: (page: string) => void;
+  cartCount?: number;
 }
 
-const spring = { type: 'spring' as const, stiffness: 380, damping: 30 };
+const sp = { type: 'spring' as const, stiffness: 420, damping: 30 };
 
-const HomeIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-    <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
-    <polyline points="9 22 9 12 15 12 15 22"/>
-  </svg>
-);
-const StatsIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-    <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/>
-    <line x1="6" y1="20" x2="6" y2="14"/>
-  </svg>
-);
-const TrophyIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-    <path d="M6 9H4.5a2.5 2.5 0 010-5H6"/>
-    <path d="M18 9h1.5a2.5 2.5 0 000-5H18"/>
-    <path d="M4 22h16M12 17v5M8 17h8"/>
-    <path d="M6 2h12v9a6 6 0 01-12 0z"/>
-  </svg>
-);
-const ShopIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-    <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-    <line x1="3" y1="6" x2="21" y2="6"/>
-    <path d="M16 10a4 4 0 01-8 0"/>
-  </svg>
-);
-const PersonIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5">
-    <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/>
-    <circle cx="12" cy="7" r="4"/>
-  </svg>
-);
+const IconHome = ({ filled }: { filled: boolean }) => filled
+  ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" className="h-6 w-6"><path d="M3 12L12 3l9 9M4 10.5V20a1 1 0 001 1h5v-5h4v5h5a1 1 0 001-1v-9.5"/></svg>;
 
-const ITEMS = [
-  { id: 'home',        label: 'Accueil',  Icon: HomeIcon   },
-  { id: 'stats',       label: 'Stats',    Icon: StatsIcon  },
-  { id: 'tournaments', label: 'Tournois', Icon: TrophyIcon },
-  { id: 'shop',        label: 'Shop',     Icon: ShopIcon   },
-  { id: 'profile',     label: 'Profil',   Icon: PersonIcon },
-];
+const IconStats = ({ filled }: { filled: boolean }) => filled
+  ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M5 3a2 2 0 00-2 2v14a2 2 0 002 2h3V3H5zm11 0v18h3a2 2 0 002-2V5a2 2 0 00-2-2h-3zm-6 6h4v12H10V9z"/></svg>
+  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" className="h-6 w-6"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>;
 
-export const Navigation: React.FC<NavigationProps> = ({ currentPage, onPageChange }) => (
-  <nav className="fixed bottom-0 left-0 right-0 z-50">
-    {/* blur backdrop */}
-    <div className="absolute inset-0 bg-[#06060f]/80 backdrop-blur-xl border-t border-white/[0.05]" />
-    <div className="relative flex items-end justify-around px-1 py-2 max-w-md mx-auto">
-      {ITEMS.map(({ id, label, Icon }) => {
-        const active = currentPage === id;
-        return (
-          <motion.button
-            key={id}
-            onClick={() => onPageChange(id)}
-            whileTap={{ scale: 0.88 }}
-            transition={spring}
-            className="relative flex flex-col items-center gap-1 px-3 py-1.5 min-w-[52px]"
+const IconTrophy = ({ filled }: { filled: boolean }) => filled
+  ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M7 4H4v6c0 3.3 2.5 6 5.5 6.5V19H7v2h10v-2h-2.5v-2.5c3-.5 5.5-3.2 5.5-6.5V4h-3V2H7v2zm0 2h10v4a5 5 0 01-10 0V6zM4 6h1v4a7.06 7.06 0 001.5 4.3A4.5 4.5 0 014 10V6zm14 0h1v4a4.5 4.5 0 01-2.5 4.03A7.06 7.06 0 0018 10V6zM9 21v-2h6v2H9z"/></svg>
+  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M8 21h8M12 17v4M7 4H4v6c0 3.3 2.5 6 5.5 6.5M17 4h3v6c0 3.3-2.5 6-5.5 6.5M7 4h10v6a5 5 0 01-10 0V4z"/></svg>;
+
+const IconShop = ({ filled }: { filled: boolean }) => filled
+  ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6zM3.01 6H21v.01H3.01V6zm7 4.5a3.5 3.5 0 007 0h1a4.5 4.5 0 01-9 0h1z"/></svg>
+  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0"/></svg>;
+
+const IconProfile = ({ filled }: { filled: boolean }) => filled
+  ? <svg viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6"><path d="M12 2a5 5 0 110 10A5 5 0 0112 2zm0 12c5.33 0 8 2.67 8 4v2H4v-2c0-1.33 2.67-4 8-4z"/></svg>
+  : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="h-6 w-6"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>;
+
+const TABS = [
+  { id: 'home',        label: 'Accueil',  Icon: IconHome    },
+  { id: 'stats',       label: 'Stats',    Icon: IconStats   },
+  { id: 'tournaments', label: 'Tournois', Icon: IconTrophy  },
+  { id: 'shop',        label: 'Shop',     Icon: IconShop    },
+  { id: 'profile',     label: 'Profil',   Icon: IconProfile },
+] as const;
+
+export const Navigation: React.FC<NavigationProps> = ({ currentPage, onPageChange, cartCount = 0 }) => (
+  <nav
+    className="fixed bottom-0 left-0 right-0 z-50 flex items-end justify-around px-1"
+    style={{
+      background: 'rgba(9,9,11,0.96)',
+      backdropFilter: 'blur(24px)',
+      WebkitBackdropFilter: 'blur(24px)',
+      borderTop: '1px solid rgba(255,255,255,0.07)',
+      paddingBottom: 'env(safe-area-inset-bottom, 12px)',
+      paddingTop: '8px',
+    }}
+  >
+    {TABS.map(({ id, label, Icon }) => {
+      const active = currentPage === id || (id === 'shop' && currentPage === 'panier');
+      const isShop = id === 'shop';
+      return (
+        <motion.button
+          key={id}
+          onClick={() => onPageChange(id)}
+          whileTap={{ scale: 0.84 }}
+          transition={sp}
+          className="relative flex flex-col items-center gap-0.5 px-3 py-1"
+          style={{ minWidth: 52 }}
+        >
+          <motion.div
+            animate={{ color: active ? 'var(--violet2)' : 'var(--text3)' }}
+            transition={{ duration: 0.2 }}
+            className="relative"
           >
-            {/* glow blob behind active */}
-            {active && (
-              <motion.div
-                layoutId="nav-glow"
-                className="absolute inset-0 rounded-xl bg-[#FF4654]/10"
-                transition={spring}
-              />
+            <Icon filled={active} />
+            {isShop && cartCount > 0 && (
+              <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 min-w-[16px] items-center justify-center rounded-full text-[9px] font-bold text-white"
+                style={{ background: 'var(--red)' }}>
+                {cartCount > 9 ? '9+' : cartCount}
+              </span>
             )}
-
+          </motion.div>
+          <motion.span
+            animate={{ color: active ? 'var(--violet2)' : 'var(--text3)' }}
+            transition={{ duration: 0.2 }}
+            className="text-[10px] font-medium"
+          >
+            {label}
+          </motion.span>
+          {active && (
             <motion.div
-              animate={{ color: active ? '#FF4654' : 'rgba(255,255,255,0.35)' }}
-              transition={{ duration: 0.2 }}
-              className="relative"
-            >
-              <Icon />
-            </motion.div>
-
-            <motion.span
-              animate={{
-                color: active ? '#ffffff' : 'rgba(255,255,255,0.3)',
-                fontWeight: active ? 700 : 500,
-              }}
-              transition={{ duration: 0.15 }}
-              className="relative text-[10px] uppercase tracking-[0.1em]"
-            >
-              {label}
-            </motion.span>
-
-            {/* active dot */}
-            {active && (
-              <motion.div
-                layoutId="nav-dot"
-                className="absolute -bottom-0.5 h-0.5 w-4 rounded-full bg-[#FF4654]"
-                transition={spring}
-              />
-            )}
-          </motion.button>
-        );
-      })}
-    </div>
+              layoutId="navPill"
+              className="absolute -top-1 left-1/2 h-0.5 w-8 -translate-x-1/2 rounded-full"
+              style={{ background: 'var(--violet2)' }}
+              transition={sp}
+            />
+          )}
+        </motion.button>
+      );
+    })}
   </nav>
 );

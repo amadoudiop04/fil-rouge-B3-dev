@@ -19,7 +19,12 @@ interface BridgeApi {
   createOrder: (orderData: CreateOrderPayload) => Promise<{ success: boolean; orderId?: number; error?: string }>;
   updateProfile: (
     userId: number,
-    updates: { username?: string; email?: string; riotId?: string; tagLine?: string },
+    updates: {
+      username?: string; email?: string; riotId?: string; tagLine?: string;
+      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string;
+      rankLabel?: string; roles?: string[]; region?: string; languages?: string[];
+      playtimes?: string[]; showInLfg?: boolean; lfgStatus?: string;
+    },
   ) => Promise<AuthResponse>;
   updatePassword: (userId: number, newPassword: string) => Promise<{ success: boolean; error?: string }>;
   getUserStats: (userId: number) => Promise<{ success: boolean; stats?: StatsRecord | null; error?: string }>;
@@ -283,9 +288,19 @@ export const platformApi = {
     return { success: true, orderId: nextId };
   },
 
+  async getLfgPlayers(): Promise<{ success: boolean; players?: unknown[]; error?: string }> {
+    const result = await callApi<{ success: boolean; players?: unknown[]; error?: string }>('/users/lfg');
+    return result ?? { success: false, players: [] };
+  },
+
   async updateProfile(
     userId: number,
-    updates: { username?: string; email?: string; riotId?: string; tagLine?: string },
+    updates: {
+      username?: string; email?: string; riotId?: string; tagLine?: string;
+      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string;
+      rankLabel?: string; roles?: string[]; region?: string; languages?: string[];
+      playtimes?: string[]; showInLfg?: boolean; lfgStatus?: string;
+    },
   ): Promise<AuthResponse> {
     const apiResponse = await callApi<AuthResponse>(`/users/${userId}/profile`, {
       method: 'PUT',

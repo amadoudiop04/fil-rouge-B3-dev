@@ -3,112 +3,100 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { LoginForm } from '../pages/LoginForm';
 import { RegisterForm } from '../pages/RegisterForm';
 
-const spring = { type: 'spring' as const, stiffness: 300, damping: 30 };
+const sp = { type: 'spring' as const, stiffness: 380, damping: 30 };
 
 export const AuthPage: React.FC = () => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-[#06060f] text-white flex flex-col items-center justify-center p-4">
-
-      {/* Animated background orbs */}
-      <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
-        <div className="bg-grid absolute inset-0 opacity-100" />
-        <div className="orb-1 absolute -left-32 -top-32 h-[420px] w-[420px] rounded-full bg-[#FF4654]/10 blur-[100px]" />
-        <div className="orb-2 absolute -right-32 top-1/3 h-[500px] w-[500px] rounded-full bg-[#9d4edd]/8 blur-[120px]" />
-        <div className="orb-3 absolute bottom-0 left-1/2 h-[300px] w-[300px] -translate-x-1/2 rounded-full bg-[#22d3ee]/6 blur-[90px]" />
-        {/* scan line */}
-        <div className="scan-line absolute inset-x-0 h-[2px] bg-gradient-to-r from-transparent via-[#FF4654]/20 to-transparent" />
-      </div>
+    <div
+      className="relative flex min-h-screen flex-col items-center justify-center px-5 py-12 overflow-hidden"
+      style={{ background: 'var(--bg)' }}
+    >
+      {/* Ambient glow */}
+      <div
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[500px] w-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full opacity-10"
+        style={{ background: 'radial-gradient(circle, var(--violet) 0%, transparent 70%)' }}
+      />
 
       {/* Logo */}
       <motion.div
-        initial={{ opacity: 0, y: -20 }}
+        initial={{ opacity: 0, y: -16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ ...spring, delay: 0.05 }}
-        className="mb-8 text-center"
+        transition={{ ...sp, delay: 0.05 }}
+        className="relative mb-8 flex flex-col items-center gap-4"
       >
-        <div className="mb-3 flex items-center justify-center gap-2">
-          <div className="h-6 w-1.5 rounded-full bg-[#FF4654]" />
-          <span className="text-3xl font-black uppercase tracking-[0.25em] text-white">
-            B3 ESPORT
-          </span>
-          <div className="h-6 w-1.5 rounded-full bg-[#FF4654]" />
+        <div className="flex h-16 w-16 items-center justify-center rounded-2xl glow-violet" style={{ background: 'var(--violet)' }}>
+          <svg viewBox="0 0 32 32" fill="none" className="h-9 w-9 text-white">
+            <path d="M16 3L4 9v14l12 6 12-6V9L16 3z" stroke="currentColor" strokeWidth={2} strokeLinejoin="round"/>
+            <path d="M4 9l12 6 12-6M16 15v12" stroke="currentColor" strokeWidth={2} strokeLinejoin="round"/>
+          </svg>
         </div>
-        <p className="text-[11px] font-bold uppercase tracking-[0.3em] text-white/30">
-          Plateforme compétitive
-        </p>
+        <div className="text-center">
+          <h1 className="text-[30px] font-bold tracking-tight">B3 Esport</h1>
+          <p className="mt-1 text-[15px]" style={{ color: 'var(--text2)' }}>Plateforme compétitive</p>
+        </div>
       </motion.div>
 
-      {/* Tab switcher */}
-      <motion.div
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ ...spring, delay: 0.12 }}
-        className="mb-5 flex gap-1 rounded-2xl bg-white/[0.04] p-1 border border-white/[0.06]"
-      >
-        {(['login', 'register'] as const).map(m => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => setMode(m)}
-            className={`relative rounded-xl px-6 py-2 text-xs font-extrabold uppercase tracking-[0.15em] transition ${
-              mode === m ? 'text-white' : 'text-white/30 hover:text-white/60'
-            }`}
-          >
-            {mode === m && (
-              <motion.div
-                layoutId="auth-tab"
-                className="absolute inset-0 rounded-xl bg-[#FF4654]"
-                transition={spring}
-              />
-            )}
-            <span className="relative">{m === 'login' ? 'Connexion' : 'Inscription'}</span>
-          </button>
-        ))}
-      </motion.div>
-
-      {/* Form card */}
+      {/* Auth card */}
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ ...spring, delay: 0.18 }}
-        className="w-full max-w-sm rounded-3xl border border-white/[0.07] bg-white/[0.025] p-6 backdrop-blur-xl"
+        transition={{ ...sp, delay: 0.12 }}
+        className="relative w-full max-w-sm overflow-hidden rounded-2xl"
+        style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}
       >
-        <AnimatePresence mode="wait">
-          {mode === 'login' ? (
-            <motion.div
-              key="login"
-              initial={{ opacity: 0, x: -16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: 16 }}
-              transition={spring}
+        {/* Tab switcher */}
+        <div className="flex" style={{ borderBottom: '1px solid var(--border)' }}>
+          {(['login', 'register'] as const).map(m => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className="relative flex-1 py-3.5 text-[14px] font-semibold transition"
+              style={{ color: mode === m ? 'var(--text1)' : 'var(--text3)' }}
             >
-              <LoginForm onSwitchToRegister={() => setMode('register')} />
-            </motion.div>
-          ) : (
-            <motion.div
-              key="register"
-              initial={{ opacity: 0, x: 16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -16 }}
-              transition={spring}
-            >
-              <RegisterForm onSwitchToLogin={() => setMode('login')} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+              {mode === m && (
+                <motion.div
+                  layoutId="authTab"
+                  className="absolute bottom-0 left-0 right-0 h-0.5"
+                  style={{ background: 'var(--violet)' }}
+                  transition={sp}
+                />
+              )}
+              {m === 'login' ? 'Connexion' : 'Inscription'}
+            </button>
+          ))}
+        </div>
+
+        {/* Form area */}
+        <div className="p-5">
+          <AnimatePresence mode="wait">
+            {mode === 'login' ? (
+              <motion.div key="login"
+                initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }}
+                transition={sp}
+              >
+                <LoginForm onSwitchToRegister={() => setMode('register')} />
+              </motion.div>
+            ) : (
+              <motion.div key="register"
+                initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }}
+                transition={sp}
+              >
+                <RegisterForm onSwitchToLogin={() => setMode('login')} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
       </motion.div>
 
       <motion.p
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.5 }}
-        className="mt-6 text-[10px] text-white/20 uppercase tracking-widest"
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.7 }}
+        className="relative mt-6 text-[12px]" style={{ color: 'var(--text3)' }}
       >
         © 2025 B3 Gaming Platform
       </motion.p>
-
     </div>
   );
 };

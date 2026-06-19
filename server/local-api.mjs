@@ -55,6 +55,12 @@ const readJsonBody = (req) =>
     req.on('error', reject);
   });
 
+const parseJsonCol = (val) => {
+  if (!val) return [];
+  if (Array.isArray(val)) return val;
+  try { return JSON.parse(val); } catch { return []; }
+};
+
 const sanitizeUser = (row) => ({
   id: row.id,
   username: row.username,
@@ -62,11 +68,25 @@ const sanitizeUser = (row) => ({
   riot_id: row.riot_id,
   tag_line: row.tag_line,
   created_at: row.created_at,
+  bio: row.bio || null,
+  discord: row.discord || null,
+  twitter: row.twitter || null,
+  twitch: row.twitch || null,
+  youtube: row.youtube || null,
+  rank_label: row.rank_label || null,
+  roles: parseJsonCol(row.roles),
+  region: row.region || null,
+  languages: parseJsonCol(row.languages),
+  playtimes: parseJsonCol(row.playtimes),
+  show_in_lfg: row.show_in_lfg ? 1 : 0,
+  lfg_status: row.lfg_status || 'lfg',
 });
+
+const USER_COLS = 'id, username, email, riot_id, tag_line, created_at, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, show_in_lfg, lfg_status';
 
 const getUserByEmail = async (email) => {
   const [rows] = await pool.execute(
-    'SELECT id, username, email, password_hash, riot_id, tag_line, created_at FROM users WHERE email = ?',
+    `SELECT ${USER_COLS}, password_hash FROM users WHERE email = ?`,
     [email]
   );
   return rows.length > 0 ? rows[0] : null;
@@ -74,10 +94,31 @@ const getUserByEmail = async (email) => {
 
 const getUserById = async (id) => {
   const [rows] = await pool.execute(
-    'SELECT id, username, email, riot_id, tag_line, created_at FROM users WHERE id = ?',
+    `SELECT ${USER_COLS} FROM users WHERE id = ?`,
     [id]
   );
   return rows.length > 0 ? rows[0] : null;
+};
+
+const initDb = async () => {
+  const cols = [
+    "ALTER TABLE users ADD COLUMN bio TEXT DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN discord VARCHAR(100) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN twitter VARCHAR(100) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN twitch VARCHAR(100) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN youtube VARCHAR(100) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN rank_label VARCHAR(50) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN roles JSON DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN region VARCHAR(20) DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN languages JSON DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN playtimes JSON DEFAULT NULL",
+    "ALTER TABLE users ADD COLUMN show_in_lfg TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN lfg_status VARCHAR(20) NOT NULL DEFAULT 'lfg'",
+  ];
+  for (const sql of cols) {
+    try { await pool.execute(sql); } catch { /* column already exists */ }
+  }
+  console.log('DB schema ready');
 };
 
 const getBearerToken = (req) => {
@@ -220,10 +261,6 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readJsonBody(req);
-      const username = String(body.username || '').trim();
-      const email = String(body.email || '').trim().toLowerCase();
-      const riotId = body.riotId === undefined ? null : String(body.riotId || '').trim() || null;
-      const tagLine = body.tagLine === undefined ? null : String(body.tagLine || '').trim() || null;
 
       const currentUser = await getUserById(userId);
       if (!currentUser) {
@@ -231,21 +268,47 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (email && email !== currentUser.email) {
-        const existing = await getUserByEmail(email);
-        if (existing && existing.id !== userId) {
-          sendJson(res, 409, { success: false, error: 'Cet email est deja utilise' });
-          return;
+      // Check email uniqueness before building update
+      if (body.email !== undefined) {
+        const e = String(body.email || '').trim().toLowerCase();
+        if (e && e !== currentUser.email) {
+          const existing = await getUserByEmail(e);
+          if (existing && existing.id !== userId) {
+            sendJson(res, 409, { success: false, error: 'Cet email est deja utilise' });
+            return;
+          }
         }
       }
 
-      const nextUsername = username || currentUser.username;
-      const nextEmail = email || currentUser.email;
+      // Build partial update — only fields explicitly present in the body
+      const updates = {};
+      if (body.username !== undefined) {
+        const u = String(body.username || '').trim();
+        updates.username = u || currentUser.username;
+      }
+      if (body.email !== undefined) {
+        const e = String(body.email || '').trim().toLowerCase();
+        updates.email = e || currentUser.email;
+      }
+      if (body.riotId  !== undefined) updates.riot_id    = String(body.riotId  || '').trim() || null;
+      if (body.tagLine !== undefined) updates.tag_line   = String(body.tagLine || '').trim() || null;
+      if (body.bio     !== undefined) updates.bio        = String(body.bio     || '').trim() || null;
+      if (body.discord !== undefined) updates.discord    = String(body.discord || '').trim() || null;
+      if (body.twitter !== undefined) updates.twitter    = String(body.twitter || '').trim() || null;
+      if (body.twitch  !== undefined) updates.twitch     = String(body.twitch  || '').trim() || null;
+      if (body.youtube !== undefined) updates.youtube    = String(body.youtube || '').trim() || null;
+      if (body.rankLabel  !== undefined) updates.rank_label = String(body.rankLabel  || '').trim() || null;
+      if (body.region     !== undefined) updates.region     = String(body.region     || '').trim() || null;
+      if (body.roles      !== undefined) updates.roles      = Array.isArray(body.roles)     ? JSON.stringify(body.roles)     : null;
+      if (body.languages  !== undefined) updates.languages  = Array.isArray(body.languages) ? JSON.stringify(body.languages) : null;
+      if (body.playtimes  !== undefined) updates.playtimes  = Array.isArray(body.playtimes) ? JSON.stringify(body.playtimes) : null;
+      if (body.showInLfg  !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
+      if (body.lfgStatus  !== undefined) updates.lfg_status  = ['lfg', 'busy'].includes(body.lfgStatus) ? body.lfgStatus : 'lfg';
 
-      await pool.execute(
-        'UPDATE users SET username = ?, email = ?, riot_id = ?, tag_line = ? WHERE id = ?',
-        [nextUsername, nextEmail, riotId, tagLine, userId]
-      );
+      if (Object.keys(updates).length > 0) {
+        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+        await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), userId]);
+      }
 
       const updatedUser = await getUserById(userId);
       if (!updatedUser) {
@@ -491,6 +554,32 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // GET /users/lfg — public list of users who opted in to appear in LFG page
+    if (req.method === 'GET' && url.pathname === '/users/lfg') {
+      const [rows] = await pool.execute(
+        `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status FROM users WHERE show_in_lfg = 1`
+      );
+      const players = rows.map(r => ({
+        id: r.id,
+        username: r.username,
+        riotId: r.riot_id || null,
+        tagLine: r.tag_line || null,
+        bio: r.bio || null,
+        discord: r.discord || null,
+        twitter: r.twitter || null,
+        twitch: r.twitch || null,
+        youtube: r.youtube || null,
+        rankLabel: r.rank_label || null,
+        roles: parseJsonCol(r.roles),
+        region: r.region || null,
+        languages: parseJsonCol(r.languages),
+        playtimes: parseJsonCol(r.playtimes),
+        lfgStatus: r.lfg_status || 'lfg',
+      }));
+      sendJson(res, 200, { success: true, players });
+      return;
+    }
+
     sendJson(res, 404, { success: false, error: 'Route introuvable' });
   } catch (error) {
     console.error('API error:', error);
@@ -498,6 +587,11 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(API_PORT, () => {
-  console.log(`Local API running on http://localhost:${API_PORT}`);
+initDb().then(() => {
+  server.listen(API_PORT, () => {
+    console.log(`Local API running on http://localhost:${API_PORT}`);
+  });
+}).catch(err => {
+  console.error('DB init failed:', err);
+  process.exit(1);
 });

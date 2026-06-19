@@ -8,6 +8,20 @@ export interface User {
   riotId?: string;
   tagLine?: string;
   createdAt?: string;
+  // Personalization
+  bio?: string;
+  discord?: string;
+  twitter?: string;
+  twitch?: string;
+  youtube?: string;
+  // Gaming / LFG
+  rankLabel?: string;
+  roles?: string[];
+  region?: string;
+  languages?: string[];
+  playtimes?: string[];
+  showInLfg?: boolean;
+  lfgStatus?: 'lfg' | 'busy';
 }
 
 interface AuthContextType {
@@ -32,15 +46,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     riot_id?: string;
     tag_line?: string;
     created_at?: string | Date;
+    bio?: string | null;
+    discord?: string | null;
+    twitter?: string | null;
+    twitch?: string | null;
+    youtube?: string | null;
+    rank_label?: string | null;
+    roles?: string[] | null;
+    region?: string | null;
+    languages?: string[] | null;
+    playtimes?: string[] | null;
+    show_in_lfg?: number;
+    lfg_status?: string;
   }): User => ({
     id: apiUser.id.toString(),
     email: apiUser.email,
     username: apiUser.username,
     riotId: apiUser.riot_id,
     tagLine: apiUser.tag_line,
-    createdAt: apiUser.created_at
-      ? new Date(apiUser.created_at).toISOString()
-      : undefined,
+    createdAt: apiUser.created_at ? new Date(apiUser.created_at).toISOString() : undefined,
+    bio: apiUser.bio ?? undefined,
+    discord: apiUser.discord ?? undefined,
+    twitter: apiUser.twitter ?? undefined,
+    twitch: apiUser.twitch ?? undefined,
+    youtube: apiUser.youtube ?? undefined,
+    rankLabel: apiUser.rank_label ?? undefined,
+    roles: apiUser.roles ?? undefined,
+    region: apiUser.region ?? undefined,
+    languages: apiUser.languages ?? undefined,
+    playtimes: apiUser.playtimes ?? undefined,
+    showInLfg: apiUser.show_in_lfg === 1,
+    lfgStatus: (apiUser.lfg_status as 'lfg' | 'busy') ?? 'lfg',
   });
 
   // Charger l'utilisateur actuel au montage

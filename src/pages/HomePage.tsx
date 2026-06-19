@@ -1,236 +1,208 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { platformApi } from '../services/platformApi';
-import { Product } from '../components/ProductCard';
+import { useAuth } from '../contexts/AuthContext';
 
-interface HomePageProps {
-  onNavigate?: (page: string) => void;
-  onBuyProduct?: (product: Product) => void;
-}
+interface HomePageProps { onNavigate?: (page: string) => void; }
 
-const spring = { type: 'spring' as const, stiffness: 320, damping: 26 };
-const fadeUp = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: spring } };
-const stagger = { show: { transition: { staggerChildren: 0.08 } } };
+const sp = { type: 'spring' as const, stiffness: 380, damping: 30 };
+const fd = (delay = 0) => ({
+  initial: { opacity: 0, y: 8 },
+  animate: { opacity: 1, y: 0 },
+  transition: { ...sp, delay },
+});
 
-// ─── section label ────────────────────────────────────────────────────────────
-const Label: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <p className="text-[10px] font-extrabold uppercase tracking-[0.22em] text-white/30 flex items-center gap-2">
-    <span className="inline-block h-3 w-0.5 rounded-full bg-[#FF4654]" />
-    {children}
-  </p>
-);
-
-// ─── quick stat tile ──────────────────────────────────────────────────────────
-const StatTile: React.FC<{
-  label: string; value: string; sub?: string; accent?: string;
-}> = ({ label, value, sub, accent = '#FF4654' }) => (
-  <motion.div
-    variants={fadeUp}
-    whileHover={{ scale: 1.03 }}
-    transition={spring}
-    className="rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4 backdrop-blur-sm"
-  >
-    <p className="text-[9px] font-extrabold uppercase tracking-[0.2em] text-white/30">{label}</p>
-    <p className="mt-1 text-3xl font-black leading-none" style={{ color: accent }}>{value}</p>
-    {sub && <p className="mt-1 text-[10px] text-white/30">{sub}</p>}
-  </motion.div>
-);
-
-// ─── tournament teaser ────────────────────────────────────────────────────────
-const NEXT = {
-  name: 'BLAST Premier World Final',
-  date: new Date(Date.now() + 96 * 3600_000),
-  prize: '500 000 $',
-};
-
-const useCountdown = (target: Date) => {
+const useCountdown = (target: number) => {
   const calc = () => {
-    const diff = Math.max(0, target.getTime() - Date.now());
-    const h = String(Math.floor(diff / 3600_000)).padStart(2, '0');
-    const m = String(Math.floor((diff % 3600_000) / 60_000)).padStart(2, '0');
-    const s = String(Math.floor((diff % 60_000) / 1000)).padStart(2, '0');
-    return { h, m, s };
+    const d = Math.max(0, target - Date.now());
+    return {
+      d: String(Math.floor(d / 86_400_000)).padStart(2, '0'),
+      h: String(Math.floor((d % 86_400_000) / 3_600_000)).padStart(2, '0'),
+      m: String(Math.floor((d % 3_600_000) / 60_000)).padStart(2, '0'),
+      s: String(Math.floor((d % 60_000) / 1000)).padStart(2, '0'),
+    };
   };
-  const [t, setT] = useState(calc);
-  useEffect(() => {
-    const id = setInterval(() => setT(calc()), 1000);
-    return () => clearInterval(id);
-  });
+  const [t, set] = useState(calc);
+  useEffect(() => { const id = setInterval(() => set(calc()), 1000); return () => clearInterval(id); });
   return t;
 };
 
-const TournamentTeaser: React.FC<{ onNavigate?: (p: string) => void }> = ({ onNavigate }) => {
-  const cd = useCountdown(NEXT.date);
-  return (
-    <motion.div
-      variants={fadeUp}
-      className="relative overflow-hidden rounded-2xl border border-[#FF4654]/20 bg-[#FF4654]/5 p-4"
-    >
-      <div className="absolute -right-8 -top-8 h-32 w-32 rounded-full bg-[#FF4654]/8 blur-2xl" />
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <span className="mb-1.5 inline-block rounded-full bg-[#FF4654]/20 px-2 py-0.5 text-[9px] font-extrabold uppercase tracking-wider text-[#FF4654]">
-            📅 Prochain tournoi majeur
-          </span>
-          <h3 className="text-sm font-extrabold leading-tight text-white">{NEXT.name}</h3>
-          <p className="mt-0.5 text-[10px] text-white/30">Dotation {NEXT.prize}</p>
-        </div>
-        <div className="shrink-0 text-right font-mono">
-          <p className="text-[9px] text-white/30 mb-1">DÉBUT DANS</p>
-          <p className="text-xl font-black tabular-nums text-[#FF4654]">
-            {cd.h}:{cd.m}:{cd.s}
-          </p>
-        </div>
-      </div>
-      <motion.button
-        whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.97 }} transition={spring}
-        onClick={() => onNavigate?.('tournaments')}
-        className="mt-3 w-full rounded-xl bg-[#FF4654] py-2.5 text-xs font-extrabold uppercase tracking-[0.15em] text-white hover:bg-[#e03040] transition"
-      >
-        Voir tous les tournois →
-      </motion.button>
-    </motion.div>
-  );
-};
+const STATS = [
+  { label: 'Rang actuel',   value: 'Diamant I', color: '#a78bfa', sub: 'Valorant' },
+  { label: 'K/D Ratio',     value: '1.45',      color: 'var(--blue)',  sub: 'Moyenne' },
+  { label: 'Win Rate',      value: '62.8%',     color: 'var(--green)', sub: '108 matchs' },
+  { label: 'ADR moyen',     value: '158',        color: 'var(--amber)', sub: 'Par round' },
+];
 
-// ─── live match strip ─────────────────────────────────────────────────────────
-const LiveStrip: React.FC<{ onNavigate?: (p: string) => void }> = ({ onNavigate }) => (
-  <motion.button
-    variants={fadeUp}
-    whileHover={{ scale: 1.015 }} whileTap={{ scale: 0.985 }} transition={spring}
-    onClick={() => onNavigate?.('tournaments')}
-    className="flex w-full items-center gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] p-3.5 text-left backdrop-blur-sm"
-  >
-    <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#FF4654]/15">
-      <span className="relative flex h-2.5 w-2.5">
-        <span className="ping-slow absolute inline-flex h-full w-full rounded-full bg-[#FF4654] opacity-60" />
-        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#FF4654]" />
-      </span>
-    </div>
-    <div className="min-w-0 flex-1">
-      <p className="text-[9px] font-extrabold uppercase tracking-widest text-[#FF4654]">En direct</p>
-      <p className="truncate text-sm font-bold text-white">NAVI vs LOUD · VCT Champions 2025</p>
-      <p className="text-[10px] text-white/30">Ascent · Map 2 · Semi-finale</p>
-    </div>
-    <div className="shrink-0 font-black text-white">
-      <span className="text-[#FFD700]">10</span>
-      <span className="mx-1 text-white/30 text-sm">:</span>
-      <span className="text-[#00CC44]">8</span>
-    </div>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="h-4 w-4 shrink-0 text-white/30">
-      <polyline points="9 18 15 12 9 6"/>
-    </svg>
-  </motion.button>
-);
-
-// ─── product card ─────────────────────────────────────────────────────────────
-const PCard: React.FC<{ name: string; price: string; img?: string; onBuy?: (p: Product) => void }> = ({
-  name, price, img, onBuy,
-}) => (
-  <motion.button
-    variants={fadeUp}
-    whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} transition={spring}
-    onClick={() => onBuy?.({ name, price, image: img })}
-    className="overflow-hidden rounded-2xl border border-white/[0.06] bg-white/[0.025] text-left"
-  >
-    <div className="h-32 w-full bg-white/[0.03]">
-      {img ? (
-        <img src={img} alt={name} className="h-full w-full object-cover" />
-      ) : (
-        <div className="flex h-full items-center justify-center text-3xl text-white/10">🛍</div>
-      )}
-    </div>
-    <div className="p-3">
-      <p className="truncate text-xs font-bold text-white">{name}</p>
-      <p className="mt-0.5 text-sm font-extrabold text-[#FF4654]">{price}</p>
-    </div>
-  </motion.button>
-);
-
-// ─── page ─────────────────────────────────────────────────────────────────────
-export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onBuyProduct }) => {
-  const [products, setProducts] = useState<Product[]>([]);
+export const HomePage: React.FC<HomePageProps> = ({ onNavigate }) => {
+  const { user } = useAuth();
+  const [products, setProducts] = useState<{ name: string; price: string; image: string; id: number }[]>([]);
+  const target = useRef(Date.now() + 4 * 86_400_000 + 6 * 3_600_000).current;
+  const cd = useCountdown(target);
 
   useEffect(() => {
-    let alive = true;
-    platformApi.getProducts().then(res => {
-      if (!alive || !res.success || !res.products) return;
-      setProducts(res.products.map(p => ({
+    platformApi.getProducts().then(r => {
+      if (!r.success || !r.products) return;
+      setProducts(r.products.slice(0, 4).map((p: any) => ({
+        id: p.id,
         name: p.name,
         price: `€${Number(p.price).toFixed(2)}`,
-        image: p.image_url,
+        image: p.image_url ?? '',
       })));
     }).catch(() => {});
-    return () => { alive = false; };
   }, []);
 
-  return (
-    <main className="flex-1 overflow-y-auto pb-28">
-      <motion.div
-        variants={stagger}
-        initial="hidden"
-        animate="show"
-        className="space-y-5 px-4 pt-5"
-      >
+  const hour = new Date().getHours();
+  const greeting = hour < 6 ? 'Bonne nuit' : hour < 12 ? 'Bonjour' : hour < 18 ? 'Bon après-midi' : 'Bonsoir';
 
-        {/* Live match strip */}
-        <motion.div variants={fadeUp}>
-          <LiveStrip onNavigate={onNavigate} />
+  return (
+    <div className="page-enter p-6 space-y-6">
+
+      {/* Greeting */}
+      <motion.div {...fd(0)}>
+        <h2 className="text-[26px] font-bold tracking-tight">
+          {greeting}, {user?.username} 👋
+        </h2>
+        <p className="mt-1 text-[14px]" style={{ color: 'var(--text3)' }}>
+          {new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+        </p>
+      </motion.div>
+
+      {/* Stats row */}
+      <motion.div {...fd(0.05)} className="grid grid-cols-4 gap-4">
+        {STATS.map(s => (
+          <div key={s.label} className="card p-5">
+            <p className="text-[11px] font-semibold uppercase tracking-widest mb-2" style={{ color: 'var(--text3)' }}>{s.label}</p>
+            <p className="text-[28px] font-bold leading-none" style={{ color: s.color }}>{s.value}</p>
+            <p className="mt-1.5 text-[12px]" style={{ color: 'var(--text3)' }}>{s.sub}</p>
+          </div>
+        ))}
+      </motion.div>
+
+      {/* Middle row */}
+      <div className="grid grid-cols-3 gap-4">
+
+        {/* Live match */}
+        <motion.button {...fd(0.09)} whileTap={{ scale: 0.99 }} transition={sp}
+          onClick={() => onNavigate?.('tournaments')}
+          className="card card-hover col-span-1 overflow-hidden text-left"
+          style={{ borderColor: 'rgba(239,68,68,0.2)' }}>
+          <div className="flex items-center justify-between px-4 py-3"
+            style={{ borderBottom: '1px solid var(--border)' }}>
+            <span className="flex items-center gap-2">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute h-full w-full animate-ping rounded-full opacity-75" style={{ background: 'var(--red)' }} />
+                <span className="relative h-2 w-2 rounded-full" style={{ background: 'var(--red)' }} />
+              </span>
+              <span className="text-[11px] font-bold uppercase tracking-wider" style={{ color: 'var(--red)' }}>En direct</span>
+            </span>
+            <span className="text-[11px]" style={{ color: 'var(--text3)' }}>VCT Champions 2025</span>
+          </div>
+          <div className="flex items-center justify-between px-6 py-6">
+            <div className="text-center">
+              <p className="text-[18px] font-black">NAVI</p>
+              <p className="text-[11px]" style={{ color: 'var(--text3)' }}>EU</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[40px] font-black tabular-nums">10</span>
+              <span className="text-[18px]" style={{ color: 'var(--text3)' }}>—</span>
+              <span className="text-[40px] font-black tabular-nums">8</span>
+            </div>
+            <div className="text-center">
+              <p className="text-[18px] font-black">LOUD</p>
+              <p className="text-[11px]" style={{ color: 'var(--text3)' }}>SA</p>
+            </div>
+          </div>
+          <p className="pb-3 text-center text-[11px]" style={{ color: 'var(--text3)' }}>
+            Ascent · Map 2 · Cliquer pour regarder →
+          </p>
+        </motion.button>
+
+        {/* Countdown */}
+        <motion.div {...fd(0.11)} className="card col-span-1 p-5">
+          <div className="flex items-start justify-between mb-4">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-widest mb-1" style={{ color: 'var(--text3)' }}>Prochain tournoi</p>
+              <p className="text-[15px] font-bold">BLAST Premier World Final</p>
+              <p className="text-[12px] mt-0.5" style={{ color: 'var(--text3)' }}>Copenhague · $500 000</p>
+            </div>
+            <span className="rounded-full px-2.5 py-1 text-[11px] font-semibold"
+              style={{ background: 'rgba(124,58,237,0.12)', color: 'var(--violet2)' }}>
+              À venir
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            {[{ v: cd.d, l: 'Jours' }, { v: cd.h, l: 'Hres' }, { v: cd.m, l: 'Min' }, { v: cd.s, l: 'Sec' }].map((u, i) => (
+              <React.Fragment key={u.l}>
+                {i > 0 && <span className="text-[20px] pb-4" style={{ color: 'var(--text3)' }}>:</span>}
+                <div className="flex flex-col items-center">
+                  <span className="text-[30px] font-black tabular-nums leading-none">{u.v}</span>
+                  <span className="mt-1 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text3)' }}>{u.l}</span>
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
+          <button onClick={() => onNavigate?.('tournaments')}
+            className="mt-4 flex w-full items-center justify-center gap-1.5 rounded-lg py-2.5 text-[12px] font-semibold transition hover:bg-white/5"
+            style={{ borderTop: '1px solid var(--border)', color: 'var(--violet2)' }}>
+            Voir tous les tournois →
+          </button>
         </motion.div>
 
-        {/* Quick stats */}
-        <section>
-          <Label>Vos performances</Label>
-          <motion.div variants={stagger} className="mt-2.5 grid grid-cols-3 gap-2.5">
-            <StatTile label="Rang"    value="D1"    sub="Diamant 1"    accent="#9d4edd" />
-            <StatTile label="K/D"     value="1.45"  sub="+0.05 ce mois" accent="#22d3ee" />
-            <StatTile label="Win Rate" value="62%"  sub="68 victoires"  accent="#FF4654" />
-          </motion.div>
-          <motion.button
-            variants={fadeUp}
-            whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} transition={spring}
-            onClick={() => onNavigate?.('stats')}
-            className="mt-2.5 w-full rounded-xl border border-white/[0.06] bg-white/[0.02] py-2.5 text-xs font-bold uppercase tracking-[0.15em] text-white/50 hover:text-white hover:bg-white/[0.05] transition"
-          >
-            Voir les stats complètes →
-          </motion.button>
-        </section>
-
-        {/* Next tournament countdown */}
-        <section>
-          <Label>Compétition</Label>
-          <div className="mt-2.5">
-            <TournamentTeaser onNavigate={onNavigate} />
+        {/* Recent activity */}
+        <motion.div {...fd(0.13)} className="card col-span-1 p-5">
+          <p className="text-[11px] font-semibold uppercase tracking-widest mb-4" style={{ color: 'var(--text3)' }}>Activité récente</p>
+          <div className="space-y-3">
+            {[
+              { label: 'Victoire sur Ascent',    sub: 'Compétitif · +20 RR',       color: 'var(--green)', icon: '🏆', time: '2h' },
+              { label: 'Défaite sur Split',      sub: 'Compétitif · −12 RR',       color: 'var(--red)',   icon: '💀', time: '5h' },
+              { label: 'Victoire sur Bind',      sub: 'Unranked · +0 RR',          color: 'var(--green)', icon: '✅', time: '1j' },
+              { label: 'Achat : T-Shirt B3',     sub: 'Commande #1042',            color: 'var(--violet2)', icon: '🛍', time: '2j' },
+            ].map(a => (
+              <div key={a.label} className="flex items-center gap-3">
+                <span className="text-[16px]">{a.icon}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-medium truncate">{a.label}</p>
+                  <p className="text-[11px]" style={{ color: 'var(--text3)' }}>{a.sub}</p>
+                </div>
+                <span className="text-[11px] shrink-0" style={{ color: 'var(--text3)' }}>{a.time}</span>
+              </div>
+            ))}
           </div>
-        </section>
+        </motion.div>
 
-        {/* Shop */}
-        {products.length > 0 && (
-          <section>
-            <div className="flex items-center justify-between">
-              <Label>Boutique</Label>
-              <button
+      </div>
+
+      {/* Shop preview */}
+      {products.length > 0 && (
+        <motion.div {...fd(0.15)}>
+          <div className="mb-3 flex items-center justify-between">
+            <p className="text-[11px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text3)' }}>Boutique</p>
+            <button onClick={() => onNavigate?.('shop')} className="text-[12px] font-semibold" style={{ color: 'var(--violet2)' }}>
+              Voir tout →
+            </button>
+          </div>
+          <div className="grid grid-cols-4 gap-4">
+            {products.map((p, i) => (
+              <motion.button key={i} whileTap={{ scale: 0.97 }} transition={sp}
                 onClick={() => onNavigate?.('shop')}
-                className="text-[10px] font-bold text-white/30 hover:text-white transition uppercase tracking-wide"
-              >
-                Tout voir →
-              </button>
-            </div>
-            <motion.div variants={stagger} className="mt-2.5 grid grid-cols-2 gap-3">
-              {products.slice(0, 2).map((p, i) => (
-                <PCard
-                  key={i}
-                  name={p.name}
-                  price={p.price ?? ''}
-                  img={p.image}
-                  onBuy={onBuyProduct}
-                />
-              ))}
-            </motion.div>
-          </section>
-        )}
+                className="card card-hover overflow-hidden text-left">
+                <div className="aspect-video w-full overflow-hidden" style={{ background: 'var(--raised)' }}>
+                  {p.image
+                    ? <img src={p.image} alt={p.name} className="h-full w-full object-cover transition-transform duration-300 hover:scale-105" />
+                    : <div className="flex h-full items-center justify-center"><span className="text-3xl opacity-20">📦</span></div>
+                  }
+                </div>
+                <div className="p-3">
+                  <p className="truncate text-[13px] font-semibold">{p.name}</p>
+                  <p className="mt-1 text-[15px] font-bold" style={{ color: 'var(--violet2)' }}>{p.price}</p>
+                </div>
+              </motion.button>
+            ))}
+          </div>
+        </motion.div>
+      )}
 
-      </motion.div>
-    </main>
+    </div>
   );
 };
