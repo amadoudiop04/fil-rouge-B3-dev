@@ -3,7 +3,7 @@
 ## 👥 Membres du projet
 
 - **AMADOU Diop**
-- **AKTAS Semih**
+- **KAFFA Hamed**
 
 <div align="center">
 
