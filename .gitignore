@@ -111,3 +111,7 @@ Thumbs.db
 *.key
 secrets.json
 .env.backup
+
+# ── Sauvegardes de base de données (emails + hashs) ──
+/backups/
+*.sql.gz

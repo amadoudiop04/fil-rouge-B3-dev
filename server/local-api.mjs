@@ -23,6 +23,25 @@ const pool = mysql.createPool({
 
 const sessions = new Map();
 
+// ── PandaScore (esports) proxy — token stays server-side, short cache ──
+const PANDA_TOKEN = process.env.PANDASCORE_TOKEN || process.env.VITE_PANDASCORE_TOKEN || '';
+const PANDA_BASE = 'https://api.pandascore.co/valorant';
+const PANDA_TTL = 30_000; // 30s — polite to rate limits while still "real-time"
+const pandaCache = new Map();
+
+const fetchPanda = async (path, extra = '') => {
+  const key = `${path}|${extra}`;
+  const hit = pandaCache.get(key);
+  if (hit && Date.now() - hit.at < PANDA_TTL) return hit.data;
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `${PANDA_BASE}${path}${sep}token=${PANDA_TOKEN}&page[size]=20${extra}`;
+  const apiRes = await fetch(url);
+  if (!apiRes.ok) throw new Error(`PandaScore ${apiRes.status}: ${path}`);
+  const data = await apiRes.json();
+  pandaCache.set(key, { at: Date.now(), data });
+  return data;
+};
+
 const setCors = (res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -647,6 +666,39 @@ const server = http.createServer(async (req, res) => {
       } catch (err) {
         console.error('Riot matches error:', err);
         sendJson(res, 200, { success: true, matches: [] });
+      }
+      return;
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  ESPORTS — PandaScore proxy (token never reaches the client)
+    // ════════════════════════════════════════════════════════
+    if (req.method === 'GET' && url.pathname.startsWith('/esports/')) {
+      if (!PANDA_TOKEN) {
+        sendJson(res, 200, { success: true, configured: false, data: [] });
+        return;
+      }
+      try {
+        let data = [];
+        if (url.pathname === '/esports/tournaments/running') {
+          data = await fetchPanda('/tournaments/running', '&sort=-begin_at');
+        } else if (url.pathname === '/esports/tournaments/upcoming') {
+          data = await fetchPanda('/tournaments/upcoming', '&sort=begin_at');
+        } else if (url.pathname === '/esports/matches/running') {
+          data = await fetchPanda('/matches/running', '&sort=-begin_at');
+        } else {
+          const bracket = url.pathname.match(/^\/esports\/tournaments\/(\d+)\/brackets$/);
+          if (bracket) {
+            data = await fetchPanda(`/tournaments/${bracket[1]}/brackets`);
+          } else {
+            sendJson(res, 404, { success: false, error: 'Route esports introuvable' });
+            return;
+          }
+        }
+        sendJson(res, 200, { success: true, configured: true, data });
+      } catch (err) {
+        console.error('PandaScore proxy error:', err);
+        sendJson(res, 200, { success: true, configured: true, data: [] });
       }
       return;
     }

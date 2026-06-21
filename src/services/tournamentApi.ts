@@ -1,5 +1,8 @@
-const TOKEN = import.meta.env.VITE_PANDASCORE_TOKEN as string | undefined;
-const BASE   = 'https://api.pandascore.co/valorant';   // Valorant uniquement
+// Esports data is proxied through the local API so the PandaScore token never
+// reaches the browser bundle. The server caches responses and reports whether
+// a token is configured.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3001';
+let pandaConfigured = true;
 
 export interface LiveMatch {
   id: number;
@@ -46,18 +49,19 @@ const extractTwitch = (url?: string): string | undefined => {
   return m ? m[1] : undefined;
 };
 
-async function panda<T>(path: string, extra = ''): Promise<T> {
-  const sep = path.includes('?') ? '&' : '?';
-  const url = `${BASE}${path}${sep}token=${TOKEN}&page[size]=20${extra}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`PandaScore ${res.status}: ${path}`);
-  return res.json() as Promise<T>;
+// Calls the local API esports proxy. Returns the raw PandaScore array and
+// records whether the server has a token configured.
+async function panda<T>(proxyPath: string): Promise<T> {
+  const res = await fetch(`${API_BASE}/esports/${proxyPath}`);
+  if (!res.ok) throw new Error(`esports proxy ${res.status}: ${proxyPath}`);
+  const json = await res.json() as { success?: boolean; configured?: boolean; data?: unknown };
+  if (typeof json.configured === 'boolean') pandaConfigured = json.configured;
+  return (Array.isArray(json.data) ? json.data : []) as unknown as T;
 }
 
 export async function getLiveMatches(): Promise<LiveMatch[]> {
-  if (!TOKEN) return [];
   try {
-    const data: any[] = await panda('/matches/running', '&sort=-begin_at');
+    const data: any[] = await panda('matches/running');
     return data
       .filter(m => m.opponents?.length === 2)
       .map(m => ({
@@ -86,9 +90,8 @@ export async function getLiveMatches(): Promise<LiveMatch[]> {
 }
 
 export async function getRunningTournaments(): Promise<EsportsTournament[]> {
-  if (!TOKEN) return [];
   try {
-    const data: any[] = await panda('/tournaments/running', '&sort=-begin_at');
+    const data: any[] = await panda('tournaments/running');
     return data.map(t => ({
       id:       t.id,
       name:     t.name ?? '',
@@ -109,9 +112,8 @@ export async function getRunningTournaments(): Promise<EsportsTournament[]> {
 }
 
 export async function getUpcomingTournaments(): Promise<EsportsTournament[]> {
-  if (!TOKEN) return [];
   try {
-    const data: any[] = await panda('/tournaments/upcoming', '&sort=begin_at&page[size]=10');
+    const data: any[] = await panda('tournaments/upcoming');
     return data.map(t => ({
       id:       t.id,
       name:     t.name ?? '',
@@ -132,9 +134,8 @@ export async function getUpcomingTournaments(): Promise<EsportsTournament[]> {
 }
 
 export async function getTournamentBracket(tournamentId: number): Promise<BracketMatch[]> {
-  if (!TOKEN) return [];
   try {
-    const data: any[] = await panda(`/tournaments/${tournamentId}/brackets`);
+    const data: any[] = await panda(`tournaments/${tournamentId}/brackets`);
     return data.map((m: any, i: number) => {
       const t1 = m.opponents?.[0]?.opponent;
       const t2 = m.opponents?.[1]?.opponent;
@@ -161,4 +162,4 @@ export async function getTournamentBracket(tournamentId: number): Promise<Bracke
   }
 }
 
-export const hasPandaToken = () => Boolean(TOKEN);
+export const hasPandaToken = () => pandaConfigured;
