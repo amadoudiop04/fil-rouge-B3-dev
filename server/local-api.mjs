@@ -1258,6 +1258,48 @@ app.put('/admin/orders/:id', requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Promo codes management (admin) ──────────────────────────
+app.get('/admin/promo-codes', requireAdmin, async (req, res) => {
+  const [rows] = await pool.query('SELECT id, code, percent, active, created_at FROM promo_codes ORDER BY id DESC');
+  res.json({ success: true, codes: rows.map(r => ({ id: r.id, code: r.code, percent: Number(r.percent), active: r.active ? 1 : 0, createdAt: r.created_at })) });
+});
+
+app.post('/admin/promo-codes', requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const code = String(body.code || '').trim().toUpperCase();
+  const percent = Number(body.percent);
+  if (!code) return res.status(400).json({ success: false, error: 'Le code est requis' });
+  if (!Number.isFinite(percent) || percent < 1 || percent > 100) {
+    return res.status(400).json({ success: false, error: 'Pourcentage invalide (1–100)' });
+  }
+  try {
+    const [r] = await pool.execute('INSERT INTO promo_codes (code, percent, active) VALUES (?, ?, ?)', [code, Math.round(percent), body.active === false ? 0 : 1]);
+    res.status(201).json({ success: true, id: r.insertId });
+  } catch {
+    res.status(409).json({ success: false, error: 'Ce code existe déjà' });
+  }
+});
+
+app.put('/admin/promo-codes/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const [[existing]] = await pool.query('SELECT * FROM promo_codes WHERE id = ?', [id]);
+  if (!existing) return res.status(404).json({ success: false, error: 'Code introuvable' });
+  const updates = {};
+  if (body.percent !== undefined) updates.percent = Math.max(1, Math.min(Number(body.percent) || existing.percent, 100));
+  if (body.active !== undefined) updates.active = body.active ? 1 : 0;
+  if (Object.keys(updates).length > 0) {
+    const set = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    await pool.execute(`UPDATE promo_codes SET ${set} WHERE id = ?`, [...Object.values(updates), id]);
+  }
+  res.json({ success: true });
+});
+
+app.delete('/admin/promo-codes/:id', requireAdmin, async (req, res) => {
+  await pool.execute('DELETE FROM promo_codes WHERE id = ?', [Number(req.params.id)]);
+  res.json({ success: true });
+});
+
 // ════════════════════════════════════════════════════════
 //  TEAMS
 // ════════════════════════════════════════════════════════

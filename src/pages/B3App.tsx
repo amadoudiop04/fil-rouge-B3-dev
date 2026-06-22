@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User } from '../contexts/AuthContext';
-import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile } from '../services/platformApi';
+import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile, type PromoCode } from '../services/platformApi';
 import type { StatsRecord, MatchWithUser, ProductRecord } from '../types/api';
 import { getLiveMatches, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
 
@@ -264,7 +264,9 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [arenaBusy, setArenaBusy] = useState(false);
 
   // Admin management: sub-tab + live lists.
-  const [adminTab, setAdminTab] = useState<'overview' | 'users' | 'merch' | 'discord'>('overview');
+  const [adminTab, setAdminTab] = useState<'overview' | 'users' | 'merch' | 'discord' | 'promo'>('overview');
+  const [promoCodes, setPromoCodes] = useState<PromoCode[] | null>(null);
+  const [promoCodeForm, setPromoCodeForm] = useState({ code: '', percent: '' });
   const [adminUsers, setAdminUsers] = useState<AdminUser[] | null>(null);
   const [adminProducts, setAdminProducts] = useState<ProductRecord[] | null>(null);
   const [prodForm, setProdForm] = useState({ name: '', price: '', category: 'ACCESSOIRES', image_url: '', stock_quantity: '' });
@@ -352,6 +354,8 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     platformApi.adminGetProducts().then(r => setAdminProducts(r.success && r.products ? r.products : []));
   const reloadDiscord = () =>
     platformApi.getDiscordServers().then(r => setDiscordServers(r.success && r.servers ? r.servers : []));
+  const reloadPromos = () =>
+    platformApi.adminGetPromoCodes().then(r => setPromoCodes(r.success && r.codes ? r.codes : []));
   // Refresh the public shop catalogue (so admin merch changes show on the Shop tab).
   const reloadShop = () =>
     platformApi.getProducts().then(r => {
@@ -366,6 +370,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     if (!user.isAdmin || screen !== 'admin') return;
     reloadAdminUsers().catch(() => setAdminUsers([]));
     reloadAdminProducts().catch(() => setAdminProducts([]));
+    reloadPromos().catch(() => setPromoCodes([]));
   }, [user.isAdmin, screen]);
 
   // Discord servers — loaded when viewing the Discord page or the Admin panel.
@@ -2403,6 +2408,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       { id: 'users', label: 'Membres' },
       { id: 'merch', label: 'Boutique' },
       { id: 'discord', label: 'Discord' },
+      { id: 'promo', label: 'Codes promo' },
     ];
     const tabRow = (
       <div style={{ display: 'flex', border: `2px solid ${C.ink}`, width: 'max-content' }}>
@@ -2609,9 +2615,74 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       </>
     );
 
+    // ── Promo code actions ───────────────────────────────────
+    const afterPromo = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) reloadPromos().catch(() => undefined); };
+    const addPromo = () => {
+      const code = promoCodeForm.code.trim().toUpperCase();
+      const percent = Number(promoCodeForm.percent);
+      if (!code) { notify('Le code est requis'); return; }
+      if (!percent || percent < 1 || percent > 100) { notify('Pourcentage invalide (1–100)'); return; }
+      setBusyId(-3);
+      platformApi.adminCreatePromoCode({ code, percent })
+        .then(r => { afterPromo(r.success ? `Code ${code} créé` : (r.error ?? ''), r.success); if (r.success) setPromoCodeForm({ code: '', percent: '' }); })
+        .catch(() => afterPromo('Échec de la création', false))
+        .finally(() => setBusyId(null));
+    };
+    const togglePromo = (p: PromoCode) => {
+      setBusyId(p.id);
+      platformApi.adminUpdatePromoCode(p.id, { active: !p.active })
+        .then(r => afterPromo(r.success ? (p.active ? 'Code désactivé' : 'Code activé') : (r.error ?? ''), r.success))
+        .catch(() => afterPromo('Échec', false))
+        .finally(() => setBusyId(null));
+    };
+    const delPromo = (p: PromoCode) => {
+      if (!window.confirm(`Supprimer le code « ${p.code} » ?`)) return;
+      setBusyId(p.id);
+      platformApi.adminDeletePromoCode(p.id)
+        .then(r => afterPromo(r.success ? 'Code supprimé' : (r.error ?? ''), r.success))
+        .catch(() => afterPromo('Échec de la suppression', false))
+        .finally(() => setBusyId(null));
+    };
+
+    const codes = promoCodes ?? [];
+    const promoBody = (
+      <>
+        <section style={{ border: `2px solid ${C.ink}`, padding: 22 }}>
+          <p style={{ ...kicker('// CRÉER_UN_CODE'), margin: '0 0 16px', letterSpacing: '.14em' }}>// CRÉER_UN_CODE</p>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr auto', gap: 14 }}>
+            <input value={promoCodeForm.code} onChange={ev => setPromoCodeForm(p => ({ ...p, code: ev.target.value.toUpperCase() }))} placeholder="CODE (ex. SUMMER20)" style={{ ...finp, textTransform: 'uppercase', letterSpacing: '.06em' }} />
+            <input value={promoCodeForm.percent} onChange={ev => setPromoCodeForm(p => ({ ...p, percent: ev.target.value.replace(/\D/g, '').slice(0, 3) }))} placeholder="% réduction" inputMode="numeric" style={finp} />
+            <button onClick={addPromo} disabled={busyId === -3} style={{ padding: '0 30px', border: 0, background: C.red, color: '#fff', fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: busyId === -3 ? 'wait' : 'pointer', opacity: busyId === -3 ? 0.6 : 1 }}>+ Créer</button>
+          </div>
+        </section>
+        {promoCodes === null ? (
+          <p style={{ fontFamily: MONO, fontSize: 12, letterSpacing: '.2em', color: C.muted, padding: '40px 0' }} className="animate-pulse">// CHARGEMENT DES CODES…</p>
+        ) : (
+          <div style={{ border: `2px solid ${C.ink}` }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 160px', gap: 14, padding: '12px 18px', borderBottom: `2px solid ${C.ink}`, background: C.paper2, fontFamily: MONO, fontSize: 10, letterSpacing: '.1em', color: C.muted }}>
+              <span>CODE</span><span>RÉDUCTION</span><span>STATUT</span><span style={{ textAlign: 'right' }}>ACTIONS</span>
+            </div>
+            {codes.length === 0 && <div style={{ padding: 20, fontFamily: MONO, fontSize: 11, color: C.muted }}>AUCUN CODE PROMO</div>}
+            {codes.map((p, i) => (
+              <div key={p.id} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 160px', gap: 14, alignItems: 'center', padding: '12px 18px', borderBottom: i < codes.length - 1 ? `1px solid ${C.line}` : 0 }}>
+                <span style={{ fontFamily: DISP, fontSize: 20, letterSpacing: '.02em' }}>{p.code}</span>
+                <span style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: C.red }}>−{p.percent}%</span>
+                <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', padding: '5px 10px', width: 'max-content', border: `1.5px solid ${p.active ? C.green : C.muted}`, color: p.active ? C.green : C.muted }}>{p.active ? 'ACTIF' : 'INACTIF'}</span>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button onClick={() => togglePromo(p)} disabled={busyId === p.id} style={{ padding: '7px 12px', border: `1.5px solid ${C.ink}`, background: C.paper, color: C.ink, fontFamily: UI, fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: busyId === p.id ? 'wait' : 'pointer', opacity: busyId === p.id ? 0.5 : 1 }}>{p.active ? 'Désact.' : 'Activer'}</button>
+                  <button onClick={() => delPromo(p)} disabled={busyId === p.id} style={{ padding: '7px 12px', border: `1.5px solid ${C.red}`, background: C.paper, color: C.red, fontFamily: UI, fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: busyId === p.id ? 'wait' : 'pointer', opacity: busyId === p.id ? 0.5 : 1 }}>Suppr.</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </>
+    );
+
     const body = adminTab === 'users' ? usersBody
       : adminTab === 'merch' ? merchBody
       : adminTab === 'discord' ? discordBody
+      : adminTab === 'promo' ? promoBody
       : overviewBody;
 
     return wrap(<>

@@ -32,6 +32,10 @@ export interface DiscordServer {
   featured?: number;
 }
 
+export interface PromoCode {
+  id: number; code: string; percent: number; active: number; createdAt?: string;
+}
+
 export interface AdminOrderItem { name: string; quantity: number; price: number; }
 export interface AdminOrder {
   id: number;
@@ -462,6 +466,31 @@ export const platformApi = {
     const r = await callApi<{ success: boolean; error?: string }>(`/admin/orders/${id}`, {
       method: 'PUT', body: JSON.stringify({ status }),
     });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Admin: promo codes ───────────────────────────────────────────────────────
+  async adminGetPromoCodes(): Promise<{ success: boolean; codes?: PromoCode[]; error?: string }> {
+    const r = await callApi<{ success: boolean; codes?: PromoCode[]; error?: string }>('/admin/promo-codes');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminCreatePromoCode(p: { code: string; percent: number; active?: boolean }) {
+    const r = await callApi<{ success: boolean; id?: number; error?: string }>('/admin/promo-codes', {
+      method: 'POST', body: JSON.stringify(p),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminUpdatePromoCode(id: number, p: { percent?: number; active?: boolean }) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/promo-codes/${id}`, {
+      method: 'PUT', body: JSON.stringify(p),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminDeletePromoCode(id: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/promo-codes/${id}`, { method: 'DELETE' });
     return r ?? { success: false, error: 'API indisponible' };
   },
 
