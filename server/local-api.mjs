@@ -23,22 +23,23 @@ const pool = mysql.createPool({
 
 const sessions = new Map();
 
-// ── PandaScore (esports) proxy — token stays server-side, short cache ──
-const PANDA_TOKEN = process.env.PANDASCORE_TOKEN || process.env.VITE_PANDASCORE_TOKEN || '';
-const PANDA_BASE = 'https://api.pandascore.co/valorant';
-const PANDA_TTL = 30_000; // 30s — polite to rate limits while still "real-time"
-const pandaCache = new Map();
+// ── vlr.gg (esports) proxy — real Valorant data, no token, short cache ──
+// Uses the community "vlresports" wrapper around vlr.gg. Proxied server-side so
+// the browser avoids CORS and we can cache responses to be polite to the source.
+const VLR_BASE = process.env.VLR_API_BASE || 'https://vlr.orlandomm.net/api/v1';
+const ESPORTS_TTL = 30_000; // 30s — near real-time without hammering vlr.gg
+const esportsCache = new Map();
 
-const fetchPanda = async (path, extra = '') => {
-  const key = `${path}|${extra}`;
-  const hit = pandaCache.get(key);
-  if (hit && Date.now() - hit.at < PANDA_TTL) return hit.data;
-  const sep = path.includes('?') ? '&' : '?';
-  const url = `${PANDA_BASE}${path}${sep}token=${PANDA_TOKEN}&page[size]=20${extra}`;
-  const apiRes = await fetch(url);
-  if (!apiRes.ok) throw new Error(`PandaScore ${apiRes.status}: ${path}`);
-  const data = await apiRes.json();
-  pandaCache.set(key, { at: Date.now(), data });
+const fetchVlr = async (path) => {
+  const hit = esportsCache.get(path);
+  if (hit && Date.now() - hit.at < ESPORTS_TTL) return hit.data;
+  const apiRes = await fetch(`${VLR_BASE}${path}`, {
+    headers: { 'User-Agent': 'b3-esport/1.0 (+local-api)' },
+  });
+  if (!apiRes.ok) throw new Error(`vlr.gg ${apiRes.status}: ${path}`);
+  const json = await apiRes.json();
+  const data = Array.isArray(json?.data) ? json.data : [];
+  esportsCache.set(path, { at: Date.now(), data });
   return data;
 };
 
@@ -100,9 +101,11 @@ const sanitizeUser = (row) => ({
   show_in_lfg: row.show_in_lfg ? 1 : 0,
   lfg_status: row.lfg_status || 'lfg',
   is_admin: row.is_admin ? 1 : 0,
+  banned: row.banned ? 1 : 0,
+  avatar_url: row.avatar_url || null,
 });
 
-const USER_COLS = 'id, username, email, riot_id, tag_line, created_at, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, show_in_lfg, lfg_status, is_admin';
+const USER_COLS = 'id, username, email, riot_id, tag_line, created_at, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, show_in_lfg, lfg_status, is_admin, banned, avatar_url';
 
 const getUserByEmail = async (email) => {
   const [rows] = await pool.execute(
@@ -152,6 +155,10 @@ const initDb = async () => {
     "ALTER TABLE users ADD COLUMN show_in_lfg TINYINT(1) NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN lfg_status VARCHAR(20) NOT NULL DEFAULT 'lfg'",
     "ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN banned TINYINT(1) NOT NULL DEFAULT 0",
+    "ALTER TABLE users ADD COLUMN avatar_url VARCHAR(500) DEFAULT NULL",
+    // Widen so uploaded pictures (stored as data URLs) fit, not just short links.
+    "ALTER TABLE users MODIFY COLUMN avatar_url MEDIUMTEXT DEFAULT NULL",
   ];
   for (const sql of cols) {
     try { await pool.execute(sql); } catch { /* column already exists */ }
@@ -187,6 +194,18 @@ const initDb = async () => {
       price_at_purchase DECIMAL(10,2) DEFAULT NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS discord_servers (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      description TEXT DEFAULT NULL,
+      invite_url VARCHAR(255) NOT NULL,
+      members VARCHAR(40) DEFAULT NULL,
+      tag VARCHAR(40) DEFAULT NULL,
+      featured TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
   // 'Cancelled' may be missing from an older enum — widen it
   try {
     await pool.execute("ALTER TABLE orders MODIFY status ENUM('Pending','Paid','Shipped','Cancelled') DEFAULT 'Paid'");
@@ -204,6 +223,21 @@ const initDb = async () => {
         ['Tapis XXL Pro RGB',          44.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1625225233840-695456021cde?w=600', 60],
         ['Gourde Steel B3',            22.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1602143407151-7111542de6e8?w=600', 75],
         ['Sac à dos Premium',      89.99, 'ACCESSOIRES', 'https://images.unsplash.com/photo-1553062407-98eeb64c6a62?w=600',   18],
+      ]]
+    );
+  }
+
+  // 4b. Seed well-known public VALORANT Discord servers if none exist yet
+  const [[{ cnt: discordCount }]] = await pool.query('SELECT COUNT(*) AS cnt FROM discord_servers');
+  if (discordCount === 0) {
+    await pool.query(
+      `INSERT INTO discord_servers (name, description, invite_url, members, tag, featured) VALUES ?`,
+      [[
+        ['VALORANT · Officiel', 'Le serveur officiel de Riot Games : annonces, notes de patch, salons par région et events communautaires.', 'https://discord.gg/valorant', '2 400 000+', 'OFFICIEL', 1],
+        ['VALORANT LFG', 'Le plus grand serveur « Looking for Group » : trouve des coéquipiers par rang et par région, à toute heure.', 'https://discord.gg/valorantlfg', '700 000+', 'LFG', 0],
+        ['r/VALORANT', 'La communauté Reddit officielle : discussions méta, clips, mèmes et salons LFG.', 'https://discord.gg/P8EyvjA', '250 000+', 'COMMUNAUTÉ', 0],
+        ['Sentinels', "Le serveur officiel de l'organisation esport Sentinels : actus de l'équipe, watch parties et communauté fan.", 'https://discord.gg/sentinels', '200 000+', 'ESPORT', 0],
+        ['VALORANT Europe', 'Communauté européenne : scrims, LFG EU, tournois amateurs et discussions en plusieurs langues.', 'https://discord.gg/valeu', '57 000+', 'RÉGION · EU', 0],
       ]]
     );
   }
@@ -328,6 +362,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (user.banned) {
+        sendJson(res, 403, { success: false, error: 'Ce compte a été banni.' });
+        return;
+      }
+
       const token = createSession(user.id);
       sendJson(res, 200, { success: true, user: sanitizeUser(user), token });
       return;
@@ -413,6 +452,7 @@ const server = http.createServer(async (req, res) => {
       if (body.twitter !== undefined) updates.twitter    = String(body.twitter || '').trim() || null;
       if (body.twitch  !== undefined) updates.twitch     = String(body.twitch  || '').trim() || null;
       if (body.youtube !== undefined) updates.youtube    = String(body.youtube || '').trim() || null;
+      if (body.avatarUrl !== undefined) updates.avatar_url = String(body.avatarUrl || '').trim() || null;
       if (body.rankLabel  !== undefined) updates.rank_label = String(body.rankLabel  || '').trim() || null;
       if (body.region     !== undefined) updates.region     = String(body.region     || '').trim() || null;
       if (body.roles      !== undefined) updates.roles      = Array.isArray(body.roles)     ? JSON.stringify(body.roles)     : null;
@@ -671,33 +711,30 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════
-    //  ESPORTS — PandaScore proxy (token never reaches the client)
+    //  ESPORTS — vlr.gg proxy (real Valorant data, no token needed)
     // ════════════════════════════════════════════════════════
     if (req.method === 'GET' && url.pathname.startsWith('/esports/')) {
-      if (!PANDA_TOKEN) {
-        sendJson(res, 200, { success: true, configured: false, data: [] });
-        return;
-      }
       try {
         let data = [];
         if (url.pathname === '/esports/tournaments/running') {
-          data = await fetchPanda('/tournaments/running', '&sort=-begin_at');
+          data = await fetchVlr('/events?status=ongoing');
         } else if (url.pathname === '/esports/tournaments/upcoming') {
-          data = await fetchPanda('/tournaments/upcoming', '&sort=begin_at');
+          data = await fetchVlr('/events?status=upcoming');
         } else if (url.pathname === '/esports/matches/running') {
-          data = await fetchPanda('/matches/running', '&sort=-begin_at');
+          // vlr returns upcoming + live in one feed; the client keeps the live ones.
+          data = await fetchVlr('/matches');
+        } else if (url.pathname === '/esports/matches/results') {
+          data = await fetchVlr('/results');
+        } else if (/^\/esports\/tournaments\/(\d+)\/brackets$/.test(url.pathname)) {
+          // vlr.gg has no per-event bracket feed via this wrapper — return empty.
+          data = [];
         } else {
-          const bracket = url.pathname.match(/^\/esports\/tournaments\/(\d+)\/brackets$/);
-          if (bracket) {
-            data = await fetchPanda(`/tournaments/${bracket[1]}/brackets`);
-          } else {
-            sendJson(res, 404, { success: false, error: 'Route esports introuvable' });
-            return;
-          }
+          sendJson(res, 404, { success: false, error: 'Route esports introuvable' });
+          return;
         }
         sendJson(res, 200, { success: true, configured: true, data });
       } catch (err) {
-        console.error('PandaScore proxy error:', err);
+        console.error('vlr.gg proxy error:', err);
         sendJson(res, 200, { success: true, configured: true, data: [] });
       }
       return;
@@ -706,7 +743,7 @@ const server = http.createServer(async (req, res) => {
     // GET /users/lfg — public list of users who opted in to appear in LFG page
     if (req.method === 'GET' && url.pathname === '/users/lfg') {
       const [rows] = await pool.execute(
-        `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status FROM users WHERE show_in_lfg = 1`
+        `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status, avatar_url FROM users WHERE show_in_lfg = 1`
       );
       const players = rows.map(r => ({
         id: r.id,
@@ -718,6 +755,7 @@ const server = http.createServer(async (req, res) => {
         twitter: r.twitter || null,
         twitch: r.twitch || null,
         youtube: r.youtube || null,
+        avatarUrl: r.avatar_url || null,
         rankLabel: r.rank_label || null,
         roles: parseJsonCol(r.roles),
         region: r.region || null,
@@ -858,6 +896,12 @@ const server = http.createServer(async (req, res) => {
         }
         updates.is_admin = body.isAdmin ? 1 : 0;
       }
+      if (body.banned !== undefined) {
+        // Banning an admin is not allowed — demote first.
+        if (body.banned && target.is_admin) { sendJson(res, 400, { success: false, error: 'Impossible de bannir un administrateur' }); return; }
+        updates.banned = body.banned ? 1 : 0;
+      }
+      if (body.showInLfg !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
       if (Object.keys(updates).length > 0) {
         const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
         await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), targetId]);
@@ -947,6 +991,41 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 409, { success: false, error: 'Suppression impossible : ce produit figure dans des commandes.' });
         return;
       }
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    // ════════════════════════════════════════════════════════
+    //  DISCORD SERVERS — public list + admin management
+    // ════════════════════════════════════════════════════════
+
+    // GET /discord-servers — public list for the Discord page
+    if (req.method === 'GET' && url.pathname === '/discord-servers') {
+      const [rows] = await pool.query('SELECT id, name, description, invite_url, members, tag, featured FROM discord_servers ORDER BY featured DESC, id ASC');
+      sendJson(res, 200, { success: true, servers: rows.map(r => ({ ...r, featured: r.featured ? 1 : 0 })) });
+      return;
+    }
+
+    // POST /admin/discord-servers — add a server
+    if (req.method === 'POST' && url.pathname === '/admin/discord-servers') {
+      if (!(await requireAdmin(req, res))) return;
+      const body = await readJsonBody(req);
+      const name = String(body.name || '').trim();
+      const invite = String(body.inviteUrl || body.invite_url || '').trim();
+      if (!name || !invite) { sendJson(res, 400, { success: false, error: 'Le nom et le lien d’invitation sont requis' }); return; }
+      const [result] = await pool.execute(
+        'INSERT INTO discord_servers (name, description, invite_url, members, tag, featured) VALUES (?, ?, ?, ?, ?, ?)',
+        [name, String(body.description || '').trim() || null, invite, String(body.members || '').trim() || null, String(body.tag || '').trim() || null, body.featured ? 1 : 0]
+      );
+      sendJson(res, 201, { success: true, id: result.insertId });
+      return;
+    }
+
+    // DELETE /admin/discord-servers/:id
+    const adminDiscordDel = url.pathname.match(/^\/admin\/discord-servers\/(\d+)$/);
+    if (req.method === 'DELETE' && adminDiscordDel) {
+      if (!(await requireAdmin(req, res))) return;
+      await pool.execute('DELETE FROM discord_servers WHERE id = ?', [Number(adminDiscordDel[1])]);
       sendJson(res, 200, { success: true });
       return;
     }

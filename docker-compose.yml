@@ -13,8 +13,10 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
       MYSQL_DATABASE: ${DB_NAME:-b3_esport}
+    # Host 3307 → container 3306, to avoid clashing with any MySQL already on host:3306.
+    # api/web reach MySQL internally as mysql:3306 regardless of this host mapping.
     ports:
-      - "3306:3306"
+      - "3307:3306"
     volumes:
       - b3-db-data:/var/lib/mysql
     healthcheck:
@@ -37,6 +39,9 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-root}
       RIOT_API_KEY: ${RIOT_API_KEY:-}
       RIOT_REGION: ${RIOT_REGION:-eu}
+      # Esports data comes from vlr.gg (proxy /esports/*) — no token needed.
+      # Override the upstream wrapper here if you self-host vlresports.
+      VLR_API_BASE: ${VLR_API_BASE:-https://vlr.orlandomm.net/api/v1}
     ports:
       - "3001:3001"
     depends_on:
@@ -50,7 +55,7 @@ services:
     command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
     environment:
       VITE_API_URL: http://localhost:3001
-      VITE_PANDASCORE_TOKEN: ${VITE_PANDASCORE_TOKEN:-}
+      # Esports token no longer used client-side — it lives on the api service now.
     ports:
       - "5173:5173"
     depends_on:

@@ -19,6 +19,17 @@ export interface AdminUser {
   rank_label?: string | null;
   show_in_lfg?: number;
   is_admin?: number;
+  banned?: number;
+}
+
+export interface DiscordServer {
+  id: number;
+  name: string;
+  description?: string | null;
+  invite_url: string;
+  members?: string | null;
+  tag?: string | null;
+  featured?: number;
 }
 
 export interface AdminOrderItem { name: string; quantity: number; price: number; }
@@ -57,7 +68,7 @@ interface BridgeApi {
     userId: number,
     updates: {
       username?: string; email?: string; riotId?: string; tagLine?: string;
-      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string;
+      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string; avatarUrl?: string;
       rankLabel?: string; roles?: string[]; region?: string; languages?: string[];
       playtimes?: string[]; showInLfg?: boolean; lfgStatus?: string;
     },
@@ -347,7 +358,7 @@ export const platformApi = {
     return r ?? { success: false, error: 'API indisponible' };
   },
 
-  async adminUpdateUser(id: number, updates: { username?: string; email?: string; isAdmin?: boolean }) {
+  async adminUpdateUser(id: number, updates: { username?: string; email?: string; isAdmin?: boolean; banned?: boolean; showInLfg?: boolean }) {
     const r = await callApi<{ success: boolean; error?: string }>(`/admin/users/${id}`, {
       method: 'PUT', body: JSON.stringify(updates),
     });
@@ -383,6 +394,23 @@ export const platformApi = {
     return r ?? { success: false, error: 'API indisponible' };
   },
 
+  async getDiscordServers(): Promise<{ success: boolean; servers?: DiscordServer[]; error?: string }> {
+    const r = await callApi<{ success: boolean; servers?: DiscordServer[]; error?: string }>('/discord-servers');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminCreateDiscordServer(s: { name: string; description?: string; inviteUrl: string; members?: string; tag?: string; featured?: boolean }) {
+    const r = await callApi<{ success: boolean; id?: number; error?: string }>('/admin/discord-servers', {
+      method: 'POST', body: JSON.stringify(s),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminDeleteDiscordServer(id: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/admin/discord-servers/${id}`, { method: 'DELETE' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
   async adminGetOrders(): Promise<{ success: boolean; orders?: AdminOrder[]; error?: string }> {
     const r = await callApi<{ success: boolean; orders?: AdminOrder[]; error?: string }>('/admin/orders');
     return r ?? { success: false, error: 'API indisponible' };
@@ -404,7 +432,7 @@ export const platformApi = {
     userId: number,
     updates: {
       username?: string; email?: string; riotId?: string; tagLine?: string;
-      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string;
+      bio?: string; discord?: string; twitter?: string; twitch?: string; youtube?: string; avatarUrl?: string;
       rankLabel?: string; roles?: string[]; region?: string; languages?: string[];
       playtimes?: string[]; showInLfg?: boolean; lfgStatus?: string;
     },

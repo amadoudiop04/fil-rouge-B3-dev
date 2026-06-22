@@ -39,12 +39,34 @@ const AppContent: React.FC = () => {
     });
   };
 
+  // Increment/decrement a line; quantity hitting 0 removes it (capped at stock).
+  const updateQty = (id: number, delta: number) => {
+    setCartItems(prev => prev.flatMap(i => {
+      if (i.id !== id) return [i];
+      const q = Math.min(i.stock_quantity || Infinity, i.quantity + delta);
+      return q <= 0 ? [] : [{ ...i, quantity: q }];
+    }));
+  };
+  const removeFromCart = (id: number) => setCartItems(prev => prev.filter(i => i.id !== id));
+  const clearCart = () => setCartItems([]);
+
   if (isLoading) return <Loader />;
   if (!user)     return <AuthPage />;
 
   const cartCount = cartItems.reduce((s, i) => s + i.quantity, 0);
 
-  return <B3App user={user} cartCount={cartCount} onLogout={logout} onAddToCart={addToCart} />;
+  return (
+    <B3App
+      user={user}
+      cartCount={cartCount}
+      cartItems={cartItems}
+      onLogout={logout}
+      onAddToCart={addToCart}
+      onUpdateQty={updateQty}
+      onRemoveFromCart={removeFromCart}
+      onClearCart={clearCart}
+    />
+  );
 };
 
 const App: React.FC = () => (

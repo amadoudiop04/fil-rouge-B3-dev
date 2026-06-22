@@ -1,8 +1,7 @@
-// Esports data is proxied through the local API so the PandaScore token never
-// reaches the browser bundle. The server caches responses and reports whether
-// a token is configured.
+// Esports data is proxied through the local API (which talks to vlr.gg via the
+// community "vlresports" wrapper). The server caches responses; no token needed.
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3001';
-let pandaConfigured = true;
+let esportsConfigured = true;
 
 export interface LiveMatch {
   id: number;
@@ -43,123 +42,157 @@ export interface BracketMatch {
   round: string;
 }
 
-const extractTwitch = (url?: string): string | undefined => {
-  if (!url) return undefined;
-  const m = url.match(/twitch\.tv\/([^/?&]+)/);
-  return m ? m[1] : undefined;
+const MONTHS: Record<string, number> = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-// Calls the local API esports proxy. Returns the raw PandaScore array and
-// records whether the server has a token configured.
-async function panda<T>(proxyPath: string): Promise<T> {
+// vlr events expose dates as a human string e.g. "Jun 21 Jul 5" (start … end).
+// Turn the start into an ISO date so the UI can format it / run the countdown.
+const parseVlrStart = (dates?: string): string | undefined => {
+  if (!dates) return undefined;
+  const m = dates.trim().match(/^([A-Za-z]{3})\s+(\d{1,2})/);
+  if (!m) return undefined;
+  const month = MONTHS[m[1].toLowerCase()];
+  if (month === undefined) return undefined;
+  const day = Number(m[2]);
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  let d = new Date(Date.UTC(year, month, day));
+  // If the parsed date is well in the past, it belongs to next year.
+  if (d.getTime() < now.getTime() - 60 * 86400000) {
+    year += 1;
+    d = new Date(Date.UTC(year, month, day));
+  }
+  return d.toISOString();
+};
+
+const fmtPrize = (p?: string): string | undefined => {
+  const n = Number(p);
+  return p && !Number.isNaN(n) && n > 0 ? `${n.toLocaleString('fr-FR')} $` : undefined;
+};
+
+// Calls the local API esports proxy and records whether esports data is available.
+async function vlr<T>(proxyPath: string): Promise<T> {
   const res = await fetch(`${API_BASE}/esports/${proxyPath}`);
   if (!res.ok) throw new Error(`esports proxy ${res.status}: ${proxyPath}`);
   const json = await res.json() as { success?: boolean; configured?: boolean; data?: unknown };
-  if (typeof json.configured === 'boolean') pandaConfigured = json.configured;
+  if (typeof json.configured === 'boolean') esportsConfigured = json.configured;
   return (Array.isArray(json.data) ? json.data : []) as unknown as T;
 }
 
+const isLive = (status?: string): boolean => (status || '').toLowerCase() === 'live';
+
 export async function getLiveMatches(): Promise<LiveMatch[]> {
   try {
-    const data: any[] = await panda('matches/running');
+    const data: any[] = await vlr('matches/running');
     return data
-      .filter(m => m.opponents?.length === 2)
+      .filter(m => isLive(m.status) && Array.isArray(m.teams) && m.teams.length === 2)
       .map(m => ({
-        id:         m.id,
-        name:       m.name ?? '',
-        tournament: m.tournament?.name ?? '',
-        serie:      m.serie?.full_name ?? '',
+        id:         Number(m.id) || 0,
+        name:       m.tournament ?? '',
+        tournament: m.tournament ?? '',
+        serie:      m.event ?? '',
         team1: {
-          name:     m.opponents[0]?.opponent?.name ?? 'TBD',
-          score:    m.results?.[0]?.score ?? 0,
-          imageUrl: m.opponents[0]?.opponent?.image_url ?? undefined,
+          name:     m.teams[0]?.name ?? 'TBD',
+          score:    Number(m.teams[0]?.score) || 0,
+          imageUrl: m.teams[0]?.logo ?? undefined,
         },
         team2: {
-          name:     m.opponents[1]?.opponent?.name ?? 'TBD',
-          score:    m.results?.[1]?.score ?? 0,
-          imageUrl: m.opponents[1]?.opponent?.image_url ?? undefined,
+          name:     m.teams[1]?.name ?? 'TBD',
+          score:    Number(m.teams[1]?.score) || 0,
+          imageUrl: m.teams[1]?.logo ?? undefined,
         },
-        twitchChannel: extractTwitch(m.official_stream_url),
-        map:           m.games?.[0]?.map?.name ?? undefined,
-        beginAt:       m.begin_at ?? undefined,
+        map:        undefined,
+        beginAt:    m.utc ?? undefined,
       }));
   } catch (e) {
-    console.error('PandaScore live matches:', e);
+    console.error('vlr.gg live matches:', e);
     return [];
   }
 }
 
+const mapEvent = (status: 'live' | 'upcoming') => (t: any): EsportsTournament => ({
+  id:        Number(t.id) || 0,
+  name:      t.name ?? '',
+  serie:     (t.country || '').toUpperCase(),
+  status,
+  location:  t.country ? String(t.country).toUpperCase() : undefined,
+  prizepool: fmtPrize(t.prizepool),
+  teams:     0, // vlr's event list doesn't expose a team count
+  beginAt:   parseVlrStart(t.dates),
+  endAt:     undefined,
+  twitchChannel: undefined,
+  color:     '#FF4654',
+});
+
 export async function getRunningTournaments(): Promise<EsportsTournament[]> {
   try {
-    const data: any[] = await panda('tournaments/running');
-    return data.map(t => ({
-      id:       t.id,
-      name:     t.name ?? '',
-      serie:    t.serie?.full_name ?? '',
-      status:   'live' as const,
-      location: t.location ?? undefined,
-      prizepool: t.prizepool ? `${Number(t.prizepool).toLocaleString('fr-FR')} $` : undefined,
-      teams:    t.teams?.length ?? 0,
-      beginAt:  t.begin_at ?? undefined,
-      endAt:    t.end_at ?? undefined,
-      twitchChannel: extractTwitch(t.live_url),
-      color:    '#FF4654',
-    }));
+    const data: any[] = await vlr('tournaments/running');
+    return data.map(mapEvent('live'));
   } catch (e) {
-    console.error('PandaScore running tourneys:', e);
+    console.error('vlr.gg running tourneys:', e);
     return [];
   }
 }
 
 export async function getUpcomingTournaments(): Promise<EsportsTournament[]> {
   try {
-    const data: any[] = await panda('tournaments/upcoming');
-    return data.map(t => ({
-      id:       t.id,
-      name:     t.name ?? '',
-      serie:    t.serie?.full_name ?? '',
-      status:   'upcoming' as const,
-      location: t.location ?? undefined,
-      prizepool: t.prizepool ? `${Number(t.prizepool).toLocaleString('fr-FR')} $` : undefined,
-      teams:    t.teams?.length ?? 0,
-      beginAt:  t.begin_at ?? undefined,
-      endAt:    t.end_at ?? undefined,
-      twitchChannel: extractTwitch(t.live_url),
-      color:    '#FF4654',
-    }));
+    const data: any[] = await vlr('tournaments/upcoming');
+    return data
+      .map(mapEvent('upcoming'))
+      .sort((a, b) => (a.beginAt ? Date.parse(a.beginAt) : Infinity) - (b.beginAt ? Date.parse(b.beginAt) : Infinity));
   } catch (e) {
-    console.error('PandaScore upcoming tourneys:', e);
+    console.error('vlr.gg upcoming tourneys:', e);
     return [];
   }
 }
 
-export async function getTournamentBracket(tournamentId: number): Promise<BracketMatch[]> {
+// vlr.gg has no per-event bracket feed through this wrapper; kept for API
+// compatibility with TournamentPage (renders an empty bracket gracefully).
+export async function getTournamentBracket(_tournamentId: number): Promise<BracketMatch[]> {
+  return [];
+}
+
+export interface TournamentMatch {
+  id: string;
+  status: 'live' | 'upcoming' | 'completed';
+  stage?: string;
+  when?: string;            // "17h 3m" / "7h 37m ago" — vlr's relative label
+  team1: { name: string; score: number | null; logo?: string };
+  team2: { name: string; score: number | null; logo?: string };
+}
+
+const norm = (s?: string) => (s || '').trim().toLowerCase();
+
+const mapMatch = (m: any, status: TournamentMatch['status']): TournamentMatch => ({
+  id: String(m.id ?? ''),
+  status,
+  stage: m.event ?? undefined,
+  when: m.in ? `dans ${m.in}` : m.ago ? `il y a ${m.ago}` : undefined,
+  team1: { name: m.teams?.[0]?.name ?? 'TBD', score: m.teams?.[0]?.score != null ? Number(m.teams[0].score) : null, logo: m.teams?.[0]?.logo ?? undefined },
+  team2: { name: m.teams?.[1]?.name ?? 'TBD', score: m.teams?.[1]?.score != null ? Number(m.teams[1].score) : null, logo: m.teams?.[1]?.logo ?? undefined },
+});
+
+// All matches (upcoming/live + completed) belonging to a tournament, matched by name.
+export async function getMatchesForTournament(name: string): Promise<TournamentMatch[]> {
+  const target = norm(name);
   try {
-    const data: any[] = await panda(`tournaments/${tournamentId}/brackets`);
-    return data.map((m: any, i: number) => {
-      const t1 = m.opponents?.[0]?.opponent;
-      const t2 = m.opponents?.[1]?.opponent;
-      const r1 = m.results?.[0]?.score ?? 0;
-      const r2 = m.results?.[1]?.score ?? 0;
-      const isDone   = m.status === 'finished';
-      const isLive   = m.status === 'running';
-      const winnerId = m.winner_id;
-      return {
-        id:     String(m.id ?? i),
-        t1Name:  t1?.name ?? 'TBD',
-        t2Name:  t2?.name ?? 'TBD',
-        t1Logo:  t1?.image_url ?? undefined,
-        t2Logo:  t2?.image_url ?? undefined,
-        s1: r1, s2: r2,
-        winner: isDone ? (winnerId === t1?.id ? t1?.name : t2?.name) : null,
-        status: isDone ? 'done' : isLive ? 'live' : 'upcoming',
-        round:  m.name ?? `Match ${i + 1}`,
-      };
-    });
+    const [feed, results] = await Promise.all([
+      vlr<any[]>('matches/running').catch(() => []),
+      vlr<any[]>('matches/results').catch(() => []),
+    ]);
+    const upcoming = feed
+      .filter(m => norm(m.tournament) === target)
+      .map(m => mapMatch(m, isLive(m.status) ? 'live' : 'upcoming'));
+    const done = results
+      .filter(m => norm(m.tournament) === target)
+      .map(m => mapMatch(m, 'completed'));
+    return [...upcoming, ...done];
   } catch (e) {
-    console.error('PandaScore bracket:', e);
+    console.error('vlr.gg tournament matches:', e);
     return [];
   }
 }
 
-export const hasPandaToken = () => pandaConfigured;
+export const hasPandaToken = () => esportsConfigured;

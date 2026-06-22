@@ -14,6 +14,7 @@ export interface User {
   twitter?: string;
   twitch?: string;
   youtube?: string;
+  avatarUrl?: string;
   // Gaming / LFG
   rankLabel?: string;
   roles?: string[];
@@ -52,6 +53,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     twitter?: string | null;
     twitch?: string | null;
     youtube?: string | null;
+    avatar_url?: string | null;
     rank_label?: string | null;
     roles?: string[] | null;
     region?: string | null;
@@ -72,6 +74,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     twitter: apiUser.twitter ?? undefined,
     twitch: apiUser.twitch ?? undefined,
     youtube: apiUser.youtube ?? undefined,
+    avatarUrl: apiUser.avatar_url ?? undefined,
     rankLabel: apiUser.rank_label ?? undefined,
     roles: apiUser.roles ?? undefined,
     region: apiUser.region ?? undefined,
