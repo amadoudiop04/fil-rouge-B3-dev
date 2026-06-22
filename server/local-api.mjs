@@ -228,6 +228,32 @@ const initDb = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   `);
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS promo_codes (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(40) NOT NULL UNIQUE,
+      percent INT(11) NOT NULL DEFAULT 0,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  // Record which promo was used on an order (ignored if columns already exist).
+  for (const sql of [
+    "ALTER TABLE orders ADD COLUMN promo_code VARCHAR(40) DEFAULT NULL",
+    "ALTER TABLE orders ADD COLUMN discount DECIMAL(10,2) NOT NULL DEFAULT 0",
+  ]) { try { await pool.execute(sql); } catch { /* exists */ } }
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      user_id INT(11) NOT NULL,
+      type VARCHAR(30) NOT NULL DEFAULT 'info',
+      message VARCHAR(255) NOT NULL,
+      link VARCHAR(120) DEFAULT NULL,
+      is_read TINYINT(1) NOT NULL DEFAULT 0,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      KEY idx_notif_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS match_history (
       id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
       user_id INT(11) NOT NULL,
@@ -291,6 +317,20 @@ const initDb = async () => {
         ['r/VALORANT', 'La communauté Reddit officielle : discussions méta, clips, mèmes et salons LFG.', 'https://discord.gg/P8EyvjA', '250 000+', 'COMMUNAUTÉ', 0],
         ['Sentinels', "Le serveur officiel de l'organisation esport Sentinels : actus de l'équipe, watch parties et communauté fan.", 'https://discord.gg/sentinels', '200 000+', 'ESPORT', 0],
         ['VALORANT Europe', 'Communauté européenne : scrims, LFG EU, tournois amateurs et discussions en plusieurs langues.', 'https://discord.gg/valeu', '57 000+', 'RÉGION · EU', 0],
+      ]]
+    );
+  }
+
+  // 4c. Seed a few shop promo codes if none exist yet
+  const [[{ cnt: promoCount }]] = await pool.query('SELECT COUNT(*) AS cnt FROM promo_codes');
+  if (promoCount === 0) {
+    await pool.query(
+      'INSERT INTO promo_codes (code, percent, active) VALUES ?',
+      [[
+        ['B3WELCOME', 10, 1],
+        ['VALORANT15', 15, 1],
+        ['RADIANT25', 25, 1],
+        ['EXPIRED', 50, 0],
       ]]
     );
   }
@@ -525,6 +565,83 @@ app.put('/users/:id/password', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ── Notifications (self only) ───────────────────────────────
+app.get('/users/:id/notifications', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) return res.status(403).json({ success: false, error: 'Acces refuse' });
+  const [rows] = await pool.query(
+    'SELECT id, type, message, link, is_read, created_at FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 30',
+    [userId]
+  );
+  const notifications = rows.map(r => ({
+    id: r.id, type: r.type, message: r.message, link: r.link || null,
+    read: r.is_read ? 1 : 0, createdAt: r.created_at,
+  }));
+  const unread = notifications.filter(n => !n.read).length;
+  res.json({ success: true, notifications, unread });
+});
+
+app.post('/users/:id/notifications/read', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) return res.status(403).json({ success: false, error: 'Acces refuse' });
+  await pool.execute('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND is_read = 0', [userId]);
+  res.json({ success: true });
+});
+
+// ── A player's own orders (self only) ───────────────────────
+app.get('/users/:id/orders', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) return res.status(403).json({ success: false, error: 'Acces refuse' });
+  const [orders] = await pool.query(
+    'SELECT id, total_ttc, payment_method, status, created_at FROM orders WHERE user_id = ? ORDER BY id DESC',
+    [userId]
+  );
+  const [items] = await pool.query(`
+    SELECT oi.order_id, oi.quantity, oi.price_at_purchase, p.name
+    FROM order_items oi
+    LEFT JOIN products p ON p.id = oi.product_id
+    WHERE oi.order_id IN (SELECT id FROM orders WHERE user_id = ?)
+  `, [userId]);
+  const byOrder = {};
+  for (const it of items) {
+    (byOrder[it.order_id] ||= []).push({ name: it.name || 'Produit supprimé', quantity: it.quantity, price: Number(it.price_at_purchase) });
+  }
+  res.json({
+    success: true,
+    orders: orders.map(o => ({ ...o, total_ttc: Number(o.total_ttc), items: byOrder[o.id] || [] })),
+  });
+});
+
+// ── Public profile (read-only, any visitor) ─────────────────
+app.get('/users/:id/public', async (req, res) => {
+  const userId = Number(req.params.id);
+  const u = await getUserById(userId);
+  if (!u) return res.status(404).json({ success: false, error: 'Joueur introuvable' });
+  const [teamRows] = await pool.query(
+    `SELECT t.id, t.name, t.tag, tm.role FROM team_members tm JOIN teams t ON t.id = tm.team_id WHERE tm.user_id = ?`,
+    [userId]
+  );
+  res.json({
+    success: true,
+    profile: {
+      id: u.id,
+      username: u.username,
+      avatarUrl: u.avatar_url || null,
+      rankLabel: u.rank_label || null,
+      bio: u.bio || null,
+      region: u.region || null,
+      roles: parseJsonCol(u.roles),
+      discord: u.discord || null,
+      twitter: u.twitter || null,
+      twitch: u.twitch || null,
+      youtube: u.youtube || null,
+      createdAt: u.created_at,
+      teams: teamRows.map(t => ({ id: t.id, name: t.name, tag: t.tag || null, role: t.role })),
+      recentMatches: await getMatchHistory(userId, 5),
+    },
+  });
+});
+
 // Persisted match history for a player (public — used by the Stats dashboard).
 app.get('/users/:id/matches', async (req, res) => {
   const matches = await getMatchHistory(Number(req.params.id));
@@ -678,6 +795,24 @@ const getMatchHistory = async (userId, limit = 20) => {
     roundsWon: r.rounds_won,
     roundsLost: r.rounds_lost,
   }));
+};
+
+// Insert an in-app notification (best-effort; never breaks the triggering action).
+const pushNotification = async (userId, type, message, link = null) => {
+  try {
+    await pool.execute(
+      'INSERT INTO notifications (user_id, type, message, link) VALUES (?, ?, ?, ?)',
+      [userId, type, message, link]
+    );
+  } catch (err) {
+    console.error('notification insert failed:', err);
+  }
+};
+
+// All user ids belonging to a team (used to fan-out tournament notifications).
+const teamMemberIds = async (teamId) => {
+  const [rows] = await pool.query('SELECT user_id FROM team_members WHERE team_id = ?', [teamId]);
+  return rows.map(r => r.user_id);
 };
 
 app.get('/riot/player/:name/:tag', async (req, res) => {
@@ -860,6 +995,24 @@ app.get('/users/lfg', async (req, res) => {
 // ════════════════════════════════════════════════════════
 //  SHOP — public
 // ════════════════════════════════════════════════════════
+const getActivePromo = async (code) => {
+  if (!code) return null;
+  const [[row]] = await pool.query(
+    'SELECT code, percent FROM promo_codes WHERE code = ? AND active = 1',
+    [String(code).trim().toUpperCase()]
+  );
+  return row ? { code: row.code, percent: Number(row.percent) } : null;
+};
+
+// Validate a promo code (used by the cart before checkout).
+app.post('/promo/validate', async (req, res) => {
+  const code = String((req.body || {}).code || '').trim().toUpperCase();
+  if (!code) return res.status(400).json({ success: false, error: 'Code requis' });
+  const promo = await getActivePromo(code);
+  if (!promo) return res.status(404).json({ success: false, error: 'Code promo invalide ou expiré' });
+  res.json({ success: true, code: promo.code, percent: promo.percent });
+});
+
 app.get('/products', async (req, res) => {
   const [rows] = await pool.query(
     'SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id ASC'
@@ -878,13 +1031,18 @@ app.get('/products', async (req, res) => {
 app.post('/orders', requireAuth, async (req, res) => {
   const sessionUserId = req.userId;
   const body = req.body || {};
-  const totalTtc = Number(body.total_ttc || 0);
   const method = ['Card', 'PayPal', 'Crypto'].includes(body.payment_method) ? body.payment_method : 'Card';
   const items = Array.isArray(body.items) ? body.items : [];
 
+  // Compute the total server-side so the discount can't be forged client-side.
+  const subtotal = items.reduce((s, it) => s + (Number(it.price_at_purchase) || 0) * (Number(it.quantity) || 1), 0);
+  const promo = await getActivePromo(body.promo_code);
+  const discount = promo ? Math.round(subtotal * promo.percent) / 100 : 0;
+  const totalTtc = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
+
   const [orderResult] = await pool.execute(
-    'INSERT INTO orders (user_id, total_ttc, payment_method, status) VALUES (?, ?, ?, ?)',
-    [sessionUserId, totalTtc, method, 'Paid']
+    'INSERT INTO orders (user_id, total_ttc, payment_method, status, promo_code, discount) VALUES (?, ?, ?, ?, ?, ?)',
+    [sessionUserId, totalTtc, method, 'Paid', promo ? promo.code : null, discount]
   );
   const orderId = orderResult.insertId;
 
@@ -903,6 +1061,7 @@ app.post('/orders', requireAuth, async (req, res) => {
     );
   }
 
+  await pushNotification(sessionUserId, 'order', `Commande #${orderId} confirmée — merci !`, '/orders');
   res.status(201).json({ success: true, orderId });
 });
 
@@ -1196,6 +1355,7 @@ app.post('/teams/:id/members', requireAuth, async (req, res) => {
   } catch {
     return res.status(409).json({ success: false, error: 'Ce joueur est déjà dans l’équipe' });
   }
+  await pushNotification(u.id, 'team', `Tu as rejoint l’équipe ${team.name}`);
   res.status(201).json({ success: true, team: await teamWithMembers(teamId) });
 });
 
@@ -1373,6 +1533,9 @@ app.post('/tournaments/:id/register', requireAuth, async (req, res) => {
   } catch {
     return res.status(409).json({ success: false, error: 'Cette équipe est déjà inscrite' });
   }
+  for (const uid of await teamMemberIds(teamId)) {
+    await pushNotification(uid, 'tournament', `${team.name} est inscrite à « ${t.name} »`);
+  }
   res.status(201).json({ success: true, tournament: await tournamentDetail(tournamentId) });
 });
 
@@ -1404,6 +1567,11 @@ app.post('/tournaments/:id/start', requireAuth, async (req, res) => {
 
   await generateBracket(tournamentId, regs.map(r => r.team_id));
   await pool.execute("UPDATE tournaments SET status = 'live' WHERE id = ?", [tournamentId]);
+  for (const r of regs) {
+    for (const uid of await teamMemberIds(r.team_id)) {
+      await pushNotification(uid, 'tournament', `Le tournoi « ${t.name} » a commencé — bonne chance !`);
+    }
+  }
   res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
 });
 

@@ -57,6 +57,7 @@ export interface CreateOrderPayload {
   user_id: number;
   total_ttc: number;
   payment_method: 'Card' | 'PayPal' | 'Crypto';
+  promo_code?: string;
   items: Array<{
     product_id: number;
     quantity: number;

@@ -82,6 +82,23 @@ export interface OwnTournament {
   teams?: TournamentTeamRef[]; matches?: BracketMatchRow[];
 }
 
+// ── Notifications / orders / public profile (Phase 3) ───────────────────────
+export interface AppNotification {
+  id: number; type: string; message: string; link?: string | null; read: number; createdAt: string;
+}
+export interface UserOrder {
+  id: number; total_ttc: number; payment_method: string; status: string; created_at: string;
+  items: Array<{ name: string; quantity: number; price: number }>;
+}
+export interface PublicProfile {
+  id: number; username: string; avatarUrl?: string | null; rankLabel?: string | null;
+  bio?: string | null; region?: string | null; roles?: string[];
+  discord?: string | null; twitter?: string | null; twitch?: string | null; youtube?: string | null;
+  createdAt?: string;
+  teams: Array<{ id: number; name: string; tag?: string | null; role: string }>;
+  recentMatches: MatchWithUser[];
+}
+
 interface BridgeApi {
   login: (email: string, password: string) => Promise<AuthResponse>;
   register: (username: string, email: string, password: string) => Promise<AuthResponse>;
@@ -552,6 +569,37 @@ export const platformApi = {
       `/riot/matches/${encodeURIComponent(name)}/${encodeURIComponent(tag)}?size=${size}`
     );
     return result ?? { success: false, matches: [], error: 'API indisponible' };
+  },
+
+  // ── Promo codes ─────────────────────────────────────────────────────────────
+  async validatePromo(code: string): Promise<{ success: boolean; code?: string; percent?: number; error?: string }> {
+    const r = await callApi<{ success: boolean; code?: string; percent?: number; error?: string }>('/promo/validate', {
+      method: 'POST', body: JSON.stringify({ code }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Notifications ───────────────────────────────────────────────────────────
+  async getNotifications(userId: number): Promise<{ success: boolean; notifications?: AppNotification[]; unread?: number; error?: string }> {
+    const r = await callApi<{ success: boolean; notifications?: AppNotification[]; unread?: number; error?: string }>(`/users/${userId}/notifications`);
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async markNotificationsRead(userId: number): Promise<{ success: boolean; error?: string }> {
+    const r = await callApi<{ success: boolean; error?: string }>(`/users/${userId}/notifications/read`, { method: 'POST' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── My orders ───────────────────────────────────────────────────────────────
+  async getMyOrders(userId: number): Promise<{ success: boolean; orders?: UserOrder[]; error?: string }> {
+    const r = await callApi<{ success: boolean; orders?: UserOrder[]; error?: string }>(`/users/${userId}/orders`);
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Public profile ──────────────────────────────────────────────────────────
+  async getPublicProfile(userId: number): Promise<{ success: boolean; profile?: PublicProfile; error?: string }> {
+    const r = await callApi<{ success: boolean; profile?: PublicProfile; error?: string }>(`/users/${userId}/public`);
+    return r ?? { success: false, error: 'API indisponible' };
   },
 
   // ── Match history (persisted Riot data) ─────────────────────────────────────

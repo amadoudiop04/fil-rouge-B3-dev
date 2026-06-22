@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User } from '../contexts/AuthContext';
-import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament } from '../services/platformApi';
+import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile } from '../services/platformApi';
 import type { StatsRecord, MatchWithUser, ProductRecord } from '../types/api';
 import { getLiveMatches, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
 
@@ -227,6 +227,13 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [statsData, setStatsData] = useState<{ stats: StatsRecord | null; matches: MatchWithUser[] } | null>(null);
   const [matchesReal, setMatchesReal] = useState(false);
   const [syncing, setSyncing] = useState(false);
+
+  // Phase 3 — notifications, my orders, public profiles.
+  const [notifs, setNotifs] = useState<AppNotification[]>([]);
+  const [unread, setUnread] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [myOrders, setMyOrders] = useState<UserOrder[] | null>(null);
+  const [viewProfile, setViewProfile] = useState<PublicProfile | null>(null);
   const [lfgPlayers, setLfgPlayers] = useState<LfgPlayer[] | null>(null);
   const [tourneys, setTourneys] = useState<EsportsTournament[] | null>(null);
   const [liveMatches, setLiveMatches] = useState<LiveMatch[] | null>(null);
@@ -289,6 +296,14 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [riotBusy, setRiotBusy] = useState(false);
   const [riotError, setRiotError] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
+
+  // Phase 4 — checkout: payment method simulation + promo code.
+  const [payMethod, setPayMethod] = useState<'Card' | 'PayPal' | 'Crypto'>('Card');
+  const [promoInput, setPromoInput] = useState('');
+  const [promo, setPromo] = useState<{ code: string; percent: number } | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [promoBusy, setPromoBusy] = useState(false);
+  const [payFields, setPayFields] = useState({ card: '', exp: '', cvc: '', email: '', coin: 'BTC' });
 
   useEffect(() => {
     let alive = true;
@@ -435,6 +450,44 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     reloadArena().catch(() => { setMyTeams([]); setOwnTournaments([]); });
   }, [screen]);
 
+  // Notifications — load on mount and poll every 45s for the bell badge.
+  useEffect(() => {
+    let alive = true;
+    const load = () => platformApi.getNotifications(Number(user.id)).then(r => {
+      if (!alive || !r.success) return;
+      setNotifs(r.notifications ?? []);
+      setUnread(r.unread ?? 0);
+    }).catch(() => undefined);
+    load();
+    const id = window.setInterval(load, 45000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [user.id]);
+
+  // My orders — loaded when the Profil tab opens.
+  useEffect(() => {
+    if (screen !== 'profile') return;
+    platformApi.getMyOrders(Number(user.id))
+      .then(r => setMyOrders(r.success && r.orders ? r.orders : []))
+      .catch(() => setMyOrders([]));
+  }, [screen, user.id]);
+
+  // Toggle the bell panel; opening it marks everything read.
+  const toggleNotifs = async () => {
+    const next = !notifOpen;
+    setNotifOpen(next);
+    if (next && unread > 0) {
+      await platformApi.markNotificationsRead(Number(user.id));
+      setUnread(0);
+      setNotifs(prev => prev.map(n => ({ ...n, read: 1 })));
+    }
+  };
+
+  const openProfileH = async (userId: number) => {
+    const r = await platformApi.getPublicProfile(userId);
+    if (r.success && r.profile) { setViewProfile(r.profile); setNotifOpen(false); }
+    else notify(r.error || 'Profil introuvable');
+  };
+
   // ── Arena action handlers ──────────────────────────────────
   const createTeamH = async () => {
     const name = teamForm.name.trim();
@@ -559,7 +612,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     if (s === screen) return;
     setScreenRaw(s);
     // Leave any open detail view so each tab opens at its top level.
-    setDetailAgent(null); setViewPlayer(null); setViewTourney(null); setViewArena(null);
+    setDetailAgent(null); setViewPlayer(null); setViewTourney(null); setViewArena(null); setViewProfile(null);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   };
 
@@ -1528,7 +1581,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
                   <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                     {(tm.members || []).map(mb => (
                       <span key={mb.userId} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', background: C.paper2, border: `1px solid ${C.line}`, fontFamily: MONO, fontSize: 11 }}>
-                        {mb.role === 'owner' ? '★' : '·'} {mb.username}
+                        <span onClick={() => openProfileH(mb.userId)} title={`Voir le profil de ${mb.username}`} style={{ cursor: 'pointer' }}>{mb.role === 'owner' ? '★' : '·'} {mb.username}</span>
                         {isCaptain && mb.role !== 'owner' && <button disabled={arenaBusy} onClick={() => removeMemberH(tm.id, mb.userId)} title="Retirer" style={{ border: 0, background: 'transparent', color: C.red, cursor: 'pointer', fontFamily: MONO, fontWeight: 700 }}>×</button>}
                       </span>
                     ))}
@@ -1753,29 +1806,59 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   /* ── 06b PANIER (live cart from the shop) ────────────────── */
   const renderPanier = () => {
     const items = cartItems;
-    const total = items.reduce((s, i) => s + i.price * i.quantity, 0);
+    const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0);
+    const discount = promo ? Math.round(subtotal * promo.percent) / 100 : 0;
+    const total = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
     const count = items.reduce((s, i) => s + i.quantity, 0);
+
+    const applyPromo = async () => {
+      const code = promoInput.trim();
+      if (!code) return;
+      setPromoBusy(true); setPromoError(null);
+      const r = await platformApi.validatePromo(code);
+      setPromoBusy(false);
+      if (r.success && r.code) { setPromo({ code: r.code, percent: r.percent ?? 0 }); setPromoError(null); notify(`Code ${r.code} appliqué — −${r.percent}%`); }
+      else { setPromo(null); setPromoError(r.error || 'Code invalide'); }
+    };
+
+    // Light client-side validation so the simulation feels real per method.
+    const payReady = () => {
+      if (payMethod === 'Card') return payFields.card.replace(/\s/g, '').length >= 16 && /^\d{2}\/\d{2}$/.test(payFields.exp) && payFields.cvc.length >= 3;
+      if (payMethod === 'PayPal') return /\S+@\S+\.\S+/.test(payFields.email);
+      return !!payFields.coin; // Crypto: a coin is selected
+    };
 
     const checkout = () => {
       if (!items.length) return;
+      if (!payReady()) { notify('Complète les informations de paiement'); return; }
       setCheckingOut(true);
-      platformApi.createOrder({
-        user_id: Number(user.id),
-        total_ttc: total,
-        payment_method: 'Card',
-        items: items.map(i => ({ product_id: i.id, quantity: i.quantity, price_at_purchase: i.price })),
-      })
-        .then(r => {
-          if (r.success) {
-            notify(`Commande #${r.orderId ?? ''} confirmée — merci !`);
-            onClearCart?.();
-            reloadShop();
-            if (user.isAdmin) platformApi.adminOverview().then(setOverview).catch(() => undefined);
-          } else notify(r.error || 'Échec de la commande');
+      // Simulate a payment gateway round-trip before persisting the order.
+      window.setTimeout(() => {
+        platformApi.createOrder({
+          user_id: Number(user.id),
+          total_ttc: total,
+          payment_method: payMethod,
+          promo_code: promo?.code,
+          items: items.map(i => ({ product_id: i.id, quantity: i.quantity, price_at_purchase: i.price })),
         })
-        .catch(() => notify('Échec de la commande'))
-        .finally(() => setCheckingOut(false));
+          .then(r => {
+            if (r.success) {
+              notify(`Paiement ${payMethod} accepté — commande #${r.orderId ?? ''} ✓`);
+              onClearCart?.();
+              setPromo(null); setPromoInput(''); setPayFields({ card: '', exp: '', cvc: '', email: '', coin: 'BTC' });
+              reloadShop();
+              if (user.isAdmin) platformApi.adminOverview().then(setOverview).catch(() => undefined);
+            } else notify(r.error || 'Échec de la commande');
+          })
+          .catch(() => notify('Échec de la commande'))
+          .finally(() => setCheckingOut(false));
+      }, 1400);
     };
+
+    const payTab = (m: 'Card' | 'PayPal' | 'Crypto', label: string) => (
+      <button key={m} onClick={() => setPayMethod(m)} style={{ flex: 1, padding: '9px 4px', border: `1.5px solid ${C.ink}`, background: payMethod === m ? C.ink : C.paper, color: payMethod === m ? C.paper : C.ink, fontFamily: MONO, fontSize: 10.5, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>{label}</button>
+    );
+    const payField: React.CSSProperties = { width: '100%', padding: '9px 11px', border: `1.5px solid ${C.line2}`, background: C.paper, fontFamily: MONO, fontSize: 12, color: C.ink, outline: 'none', boxSizing: 'border-box' };
 
     return (
       <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 26 }}>
@@ -1812,14 +1895,55 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
             </div>
             <div style={{ border: `2px solid ${C.ink}`, padding: 24, position: 'sticky', top: 0 }}>
               <p style={{ ...kicker('// RÉCAPITULATIF'), margin: '0 0 18px', letterSpacing: '.14em' }}>// RÉCAPITULATIF</p>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 13, color: C.ink2, marginBottom: 10 }}><span>SOUS-TOTAL</span><span>{eur(total)}</span></div>
+
+              {/* Promo code */}
+              <div style={{ display: 'flex', gap: 6, marginBottom: 4 }}>
+                <input value={promoInput} onChange={ev => setPromoInput(ev.target.value.toUpperCase())} placeholder="CODE PROMO" disabled={!!promo}
+                  style={{ ...payField, flex: 1, textTransform: 'uppercase', letterSpacing: '.06em' }} />
+                {promo
+                  ? <button onClick={() => { setPromo(null); setPromoInput(''); setPromoError(null); }} style={{ padding: '0 14px', border: `1.5px solid ${C.red}`, background: C.paper, color: C.red, fontFamily: MONO, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>RETIRER</button>
+                  : <button onClick={applyPromo} disabled={promoBusy} style={{ padding: '0 14px', border: `1.5px solid ${C.ink}`, background: C.ink, color: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>{promoBusy ? '…' : 'OK'}</button>}
+              </div>
+              {promoError && <p style={{ margin: '0 0 10px', fontFamily: MONO, fontSize: 10.5, color: C.red }}>{promoError}</p>}
+              {promo && <p style={{ margin: '0 0 10px', fontFamily: MONO, fontSize: 10.5, color: C.green }}>✓ {promo.code} · −{promo.percent}%</p>}
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 13, color: C.ink2, marginBottom: 10, marginTop: 8 }}><span>SOUS-TOTAL</span><span>{eur(subtotal)}</span></div>
+              {discount > 0 && <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 13, color: C.green, marginBottom: 10 }}><span>RÉDUCTION</span><span>−{eur(discount)}</span></div>}
               <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 13, color: C.ink2, marginBottom: 16 }}><span>LIVRAISON</span><span>OFFERTE</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderTop: `2px solid ${C.ink}`, paddingTop: 16 }}>
                 <span style={{ fontFamily: DISP, fontSize: 22, textTransform: 'uppercase' }}>Total</span>
                 <span style={{ fontFamily: MONO, fontSize: 30, fontWeight: 700, color: C.red }}>{eur(total)}</span>
               </div>
-              <button onClick={checkout} disabled={checkingOut} className="b3-btn-ink" style={{ marginTop: 22, width: '100%', padding: 15, border: 0, background: C.red, color: '#fff', fontFamily: UI, fontSize: 14, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: checkingOut ? 'wait' : 'pointer', opacity: checkingOut ? 0.6 : 1 }}>
-                {checkingOut ? 'Traitement…' : 'Valider la commande'}
+
+              {/* Payment method */}
+              <p style={{ ...kicker('// PAIEMENT'), margin: '20px 0 8px', letterSpacing: '.14em' }}>// PAIEMENT</p>
+              <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+                {payTab('Card', '💳 Carte')}{payTab('PayPal', 'PayPal')}{payTab('Crypto', '₿ Crypto')}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+                {payMethod === 'Card' && <>
+                  <input value={payFields.card} onChange={ev => setPayFields(f => ({ ...f, card: ev.target.value.replace(/[^\d ]/g, '').slice(0, 19) }))} placeholder="4242 4242 4242 4242" inputMode="numeric" style={payField} />
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <input value={payFields.exp} onChange={ev => setPayFields(f => ({ ...f, exp: ev.target.value.replace(/[^\d/]/g, '').slice(0, 5) }))} placeholder="MM/AA" style={{ ...payField, flex: 1 }} />
+                    <input value={payFields.cvc} onChange={ev => setPayFields(f => ({ ...f, cvc: ev.target.value.replace(/\D/g, '').slice(0, 4) }))} placeholder="CVC" inputMode="numeric" style={{ ...payField, flex: 1 }} />
+                  </div>
+                </>}
+                {payMethod === 'PayPal' && <>
+                  <input value={payFields.email} onChange={ev => setPayFields(f => ({ ...f, email: ev.target.value }))} placeholder="email@paypal.com" style={payField} />
+                  <p style={{ margin: 0, fontFamily: MONO, fontSize: 10, color: C.muted }}>Simulation — tu seras « redirigé » vers PayPal.</p>
+                </>}
+                {payMethod === 'Crypto' && <>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {(['BTC', 'ETH', 'USDT'] as const).map(c => (
+                      <button key={c} onClick={() => setPayFields(f => ({ ...f, coin: c }))} style={{ flex: 1, padding: '8px 4px', border: `1.5px solid ${C.line2}`, background: payFields.coin === c ? C.paper3 : C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, cursor: 'pointer' }}>{c}</button>
+                    ))}
+                  </div>
+                  <p style={{ margin: 0, fontFamily: MONO, fontSize: 10, color: C.muted, wordBreak: 'break-all' }}>Envoie {eur(total)} en {payFields.coin} à<br /><span style={{ color: C.ink }}>bc1qb3esport0xsimulated0wallet0address0demo</span></p>
+                </>}
+              </div>
+
+              <button onClick={checkout} disabled={checkingOut} className="b3-btn-ink" style={{ width: '100%', padding: 15, border: 0, background: C.red, color: '#fff', fontFamily: UI, fontSize: 14, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: checkingOut ? 'wait' : 'pointer', opacity: checkingOut ? 0.6 : 1 }}>
+                {checkingOut ? '⟳ Paiement en cours…' : `Payer ${eur(total)}`}
               </button>
               <button onClick={() => setScreen('shop')} style={{ marginTop: 10, width: '100%', padding: 12, border: `1.5px solid ${C.ink}`, background: C.paper, fontFamily: UI, fontSize: 12, fontWeight: 700, letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>+ Continuer mes achats</button>
             </div>
@@ -1885,6 +2009,81 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   };
 
   /* ── 07 PROFIL (real user data + persisted LFG) ──────────── */
+  /* ── Public profile (read-only view of any player) ───────── */
+  const renderPublicProfile = (p: PublicProfile) => {
+    const socials = [
+      ['Discord', p.discord], ['Twitter', p.twitter], ['Twitch', p.twitch], ['YouTube', p.youtube],
+    ].filter(([, v]) => v) as [string, string][];
+    return (
+      <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <button onClick={() => setViewProfile(null)} style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', border: `2px solid ${C.ink}`, background: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', cursor: 'pointer' }}>← Retour</button>
+
+        <section style={{ display: 'flex', gap: 20, alignItems: 'center', border: `2px solid ${C.ink}`, padding: 24 }}>
+          <div style={{ width: 84, height: 84, flex: 'none', background: C.paper3, border: `2px solid ${C.ink}`, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', fontFamily: DISP, fontSize: 34 }}>
+            {p.avatarUrl ? <img src={p.avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : (p.username[0] || '?').toUpperCase()}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <h2 style={{ margin: 0, fontFamily: DISP, fontSize: 38, lineHeight: .9, textTransform: 'uppercase' }}>{p.username}</h2>
+            <p style={{ margin: '8px 0 0', fontFamily: MONO, fontSize: 12, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+              {[p.rankLabel || 'Non classé', p.region || null].filter(Boolean).join(' · ')}
+            </p>
+          </div>
+        </section>
+
+        {p.bio && <p style={{ margin: 0, fontFamily: UI, fontSize: 15, lineHeight: 1.5, color: C.ink2, maxWidth: 680 }}>{p.bio}</p>}
+
+        {(p.roles && p.roles.length > 0) && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {p.roles.map(r => <span key={r} style={{ padding: '5px 12px', border: `1.5px solid ${C.line2}`, fontFamily: MONO, fontSize: 11, textTransform: 'uppercase' }}>{r}</span>)}
+          </div>
+        )}
+
+        {socials.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {socials.map(([k, v]) => (
+              <span key={k} style={{ display: 'inline-flex', gap: 6, padding: '7px 12px', background: C.paper2, border: `1px solid ${C.line}`, fontFamily: MONO, fontSize: 11 }}>
+                <span style={{ color: C.muted }}>{k}</span><span style={{ fontWeight: 700 }}>{v}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {p.teams.length > 0 && (
+          <section>
+            <p style={{ ...kicker('x'), margin: '0 0 12px' }}>// ÉQUIPES</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+              {p.teams.map(t => (
+                <span key={t.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', border: `1.5px solid ${C.line2}`, fontFamily: UI, fontWeight: 700 }}>
+                  <span style={{ fontFamily: DISP, fontSize: 16 }}>{t.tag || '—'}</span>{t.name}
+                  <span style={{ fontFamily: MONO, fontSize: 9, color: C.muted }}>{t.role === 'owner' ? '★ CAPITAINE' : 'MEMBRE'}</span>
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section>
+          <p style={{ ...kicker('x'), margin: '0 0 12px' }}>// DERNIERS MATCHS</p>
+          <div style={{ borderTop: `2px solid ${C.ink}` }}>
+            {p.recentMatches.length === 0
+              ? <div style={{ padding: '20px 0', fontFamily: MONO, fontSize: 11, color: C.muted }}>AUCUN MATCH SYNCHRONISÉ</div>
+              : p.recentMatches.map((m, i) => {
+                  const col = m.result === 'W' ? C.green : C.red;
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 0 14px 14px', borderBottom: `1px solid ${C.line}`, borderLeft: `4px solid ${col}` }}>
+                      <span style={{ fontFamily: UI, fontSize: 15, fontWeight: 700, textTransform: 'uppercase', flex: 1 }}>{m.map_name}</span>
+                      <span style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>{m.agent_played}</span>
+                      <span style={{ fontFamily: MONO, fontSize: 13, color: C.ink2 }}>{m.score_home}—{m.score_away}</span>
+                      <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, width: 76, textAlign: 'right', color: col }}>{m.kills}/{m.deaths}/{m.assists}</span>
+                    </div>
+                  );
+                })}
+          </div>
+        </section>
+      </div>
+    );
+  };
+
   const renderProfile = () => {
     const stats = statsData?.stats ?? DEFAULT_STATS;
     const f = profileForm;
@@ -2089,6 +2288,33 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
               </button>
             </div>
           </div>
+        </section>
+
+        {/* MES COMMANDES — the player's own order history */}
+        <section>
+          <p style={{ ...kicker('// MES_COMMANDES'), margin: '0 0 14px', letterSpacing: '.14em' }}>// MES_COMMANDES</p>
+          {myOrders === null
+            ? <p style={{ fontFamily: MONO, fontSize: 11, color: C.muted }} className="animate-pulse">// CHARGEMENT…</p>
+            : myOrders.length === 0
+              ? <p style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucune commande pour l’instant. Direction le Shop !</p>
+              : <div style={{ borderTop: `2px solid ${C.ink}` }}>
+                  {myOrders.map(o => (
+                    <div key={o.id} style={{ padding: '16px 4px', borderBottom: `1px solid ${C.line}` }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                        <span style={{ fontFamily: DISP, fontSize: 20 }}>#{o.id}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>{new Date(o.created_at).toLocaleDateString('fr-FR')} · {o.payment_method}</span>
+                        <span style={{ flex: 1 }} />
+                        <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', padding: '5px 10px', border: `1.5px solid ${ORDER_STATUS_COLOR[o.status] || C.ink2}`, color: ORDER_STATUS_COLOR[o.status] || C.ink2 }}>{o.status.toUpperCase()}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 18, fontWeight: 700, color: C.red, width: 90, textAlign: 'right' }}>{eur(o.total_ttc)}</span>
+                      </div>
+                      {o.items.length > 0 && (
+                        <p style={{ margin: '8px 0 0', fontFamily: MONO, fontSize: 11, color: C.ink2 }}>
+                          {o.items.map(it => `${it.quantity}× ${it.name}`).join('  ·  ')}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>}
         </section>
       </div>
     );
@@ -2441,6 +2667,29 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
           <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.12em' }}>
             <span style={{ height: 8, width: 8, background: C.red }} />LIVE · EUW
           </span>
+          <div style={{ position: 'relative' }}>
+            <button onClick={toggleNotifs} title="Notifications"
+              style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 38, border: `1.5px solid ${C.ink}`, background: notifOpen ? C.ink : 'transparent', color: notifOpen ? C.paper : C.ink, cursor: 'pointer', fontSize: 16 }}>
+              ◉
+              {unread > 0 && (
+                <span style={{ position: 'absolute', top: -7, right: -7, minWidth: 17, height: 17, padding: '0 4px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.red, color: '#fff', fontFamily: MONO, fontSize: 10, fontWeight: 700, borderRadius: 9 }}>{unread > 9 ? '9+' : unread}</span>
+              )}
+            </button>
+            {notifOpen && (
+              <div style={{ position: 'absolute', top: 48, right: 0, width: 320, maxHeight: 380, overflowY: 'auto', background: C.paper, border: `2px solid ${C.ink}`, zIndex: 50, boxShadow: '0 12px 30px rgba(0,0,0,.18)' }}>
+                <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.line}`, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.12em', color: C.muted }}>// NOTIFICATIONS</div>
+                {notifs.length === 0
+                  ? <div style={{ padding: '24px 14px', fontFamily: MONO, fontSize: 11, color: C.muted, textAlign: 'center' }}>Aucune notification</div>
+                  : notifs.map(n => (
+                      <div key={n.id} onClick={() => { if (n.link === '/orders') { setScreen('profile'); setNotifOpen(false); } }}
+                        style={{ padding: '12px 14px', borderBottom: `1px solid ${C.line}`, cursor: n.link ? 'pointer' : 'default', background: n.read ? 'transparent' : C.paper2 }}>
+                        <p style={{ margin: 0, fontFamily: UI, fontSize: 13, lineHeight: 1.35, color: C.ink }}>{n.message}</p>
+                        <p style={{ margin: '5px 0 0', fontFamily: MONO, fontSize: 9.5, letterSpacing: '.08em', color: C.muted, textTransform: 'uppercase' }}>{n.type}{n.link === '/orders' ? ' · voir →' : ''}</p>
+                      </div>
+                    ))}
+              </div>
+            )}
+          </div>
           <button onClick={() => setScreen('panier')} className="b3-panier"
             style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', border: `1.5px solid ${C.ink}`, background: screen === 'panier' ? C.red : C.ink, color: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', cursor: 'pointer' }}>
             PANIER [{cartCount}]
@@ -2468,7 +2717,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       <div style={{ position: 'relative', flex: 1, minHeight: 0 }}>
         <div style={{ position: 'absolute', top: 0, bottom: 0, width: 4, background: C.red, left: scanX, opacity: scanOp, pointerEvents: 'none', zIndex: 20 }} />
         <main ref={scrollRef} style={{ position: 'absolute', inset: 0, overflowY: 'auto', padding: '34px 40px 56px' }}>
-          {screens[screen]()}
+          {viewProfile ? renderPublicProfile(viewProfile) : screens[screen]()}
         </main>
       </div>
     </div>
