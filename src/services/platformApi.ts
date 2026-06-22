@@ -57,6 +57,31 @@ export interface AdminOverviewResponse {
   signups?: Array<{ day: string; count: number }>;
 }
 
+// ── Teams & own-tournaments (Feature: tournament product loop) ──────────────
+export interface TeamMember {
+  userId: number; username: string; role: string;
+  avatarUrl?: string | null; rankLabel?: string | null;
+}
+export interface Team {
+  id: number; name: string; tag?: string | null; ownerId: number;
+  logoUrl?: string | null; description?: string | null; createdAt?: string;
+  members?: TeamMember[]; memberCount?: number;
+}
+export interface BracketMatchRow {
+  id: number; round: number; slot: number;
+  team1Id: number | null; team2Id: number | null;
+  score1: number; score2: number; winnerId: number | null; status: string;
+}
+export interface TournamentTeamRef {
+  teamId: number; name: string; tag?: string | null; logoUrl?: string | null; checkedIn: number;
+}
+export interface OwnTournament {
+  id: number; name: string; format: string; maxTeams: number;
+  region?: string | null; prizePool?: string | null; startsAt?: string | null;
+  status: string; createdBy: number | null; teamCount?: number;
+  teams?: TournamentTeamRef[]; matches?: BracketMatchRow[];
+}
+
 interface BridgeApi {
   login: (email: string, password: string) => Promise<AuthResponse>;
   register: (username: string, email: string, password: string) => Promise<AuthResponse>;
@@ -527,5 +552,110 @@ export const platformApi = {
       `/riot/matches/${encodeURIComponent(name)}/${encodeURIComponent(tag)}?size=${size}`
     );
     return result ?? { success: false, matches: [], error: 'API indisponible' };
+  },
+
+  // ── Match history (persisted Riot data) ─────────────────────────────────────
+  async getMatchHistory(userId: number): Promise<{ success: boolean; matches?: MatchWithUser[]; error?: string }> {
+    const r = await callApi<{ success: boolean; matches?: MatchWithUser[]; error?: string }>(`/users/${userId}/matches`);
+    return r ?? { success: false, matches: [], error: 'API indisponible' };
+  },
+
+  async syncRiotMatches(userId: number, name?: string, tag?: string): Promise<{
+    success: boolean; synced?: number; fetched?: number; rankLabel?: string | null;
+    matches?: MatchWithUser[]; needsApiKey?: boolean; error?: string;
+  }> {
+    const r = await callApi<{ success: boolean; synced?: number; fetched?: number; rankLabel?: string | null; matches?: MatchWithUser[]; needsApiKey?: boolean; error?: string }>(
+      `/users/${userId}/sync`,
+      { method: 'POST', body: JSON.stringify(name && tag ? { name, tag } : {}) },
+    );
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Teams ──────────────────────────────────────────────────────────────────
+  async createTeam(payload: { name: string; tag?: string; logoUrl?: string; description?: string }) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>('/teams', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getTeams() {
+    const r = await callApi<{ success: boolean; teams?: Team[]; error?: string }>('/teams');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getMyTeams() {
+    const r = await callApi<{ success: boolean; teams?: Team[]; error?: string }>('/teams/mine');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getTeam(id: number) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/teams/${id}`);
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async addTeamMember(teamId: number, username: string) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/teams/${teamId}/members`, {
+      method: 'POST', body: JSON.stringify({ username }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async removeTeamMember(teamId: number, userId: number) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/teams/${teamId}/members/${userId}`, {
+      method: 'DELETE',
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async deleteTeam(teamId: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/teams/${teamId}`, { method: 'DELETE' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Own tournaments + brackets ──────────────────────────────────────────────
+  async createTournament(payload: { name: string; maxTeams?: number; region?: string; prizePool?: string; startsAt?: string }) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>('/tournaments', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getOwnTournaments() {
+    const r = await callApi<{ success: boolean; tournaments?: OwnTournament[]; error?: string }>('/tournaments');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async getOwnTournament(id: number) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>(`/tournaments/${id}`);
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async registerTeam(tournamentId: number, teamId: number) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>(`/tournaments/${tournamentId}/register`, {
+      method: 'POST', body: JSON.stringify({ teamId }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async unregisterTeam(tournamentId: number, teamId: number) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>(`/tournaments/${tournamentId}/register/${teamId}`, {
+      method: 'DELETE',
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async startTournament(tournamentId: number) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>(`/tournaments/${tournamentId}/start`, {
+      method: 'POST',
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async reportMatch(tournamentId: number, matchId: number, score1: number, score2: number) {
+    const r = await callApi<{ success: boolean; tournament?: OwnTournament; error?: string }>(`/tournaments/${tournamentId}/matches/${matchId}`, {
+      method: 'PUT', body: JSON.stringify({ score1, score2 }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
   },
 };

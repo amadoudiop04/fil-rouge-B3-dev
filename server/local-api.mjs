@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
-import http from 'http';
-import { URL } from 'url';
 import crypto from 'crypto';
+import express from 'express';
+import cors from 'cors';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 
@@ -9,6 +9,8 @@ dotenv.config();
 
 const API_PORT = Number(process.env.API_PORT || 3001);
 const SALT_ROUNDS = 10;
+// Front-end origin allowed to call this API (browser CORS). Override via env if needed.
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -42,38 +44,6 @@ const fetchVlr = async (path) => {
   esportsCache.set(path, { at: Date.now(), data });
   return data;
 };
-
-const setCors = (res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:5173');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-};
-
-const sendJson = (res, statusCode, payload) => {
-  setCors(res);
-  res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(payload));
-};
-
-const readJsonBody = (req) =>
-  new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk.toString();
-    });
-    req.on('end', () => {
-      if (!body) {
-        resolve({});
-        return;
-      }
-      try {
-        resolve(JSON.parse(body));
-      } catch {
-        reject(new Error('Corps JSON invalide'));
-      }
-    });
-    req.on('error', reject);
-  });
 
 const parseJsonCol = (val) => {
   if (!val) return [];
@@ -211,6 +181,89 @@ const initDb = async () => {
     await pool.execute("ALTER TABLE orders MODIFY status ENUM('Pending','Paid','Shipped','Cancelled') DEFAULT 'Paid'");
   } catch { /* ok */ }
 
+  // 3b. Teams + own-tournaments + single-elimination brackets
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(60) NOT NULL,
+      tag VARCHAR(10) DEFAULT NULL,
+      owner_id INT(11) NOT NULL,
+      logo_url VARCHAR(500) DEFAULT NULL,
+      description TEXT DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS team_members (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      team_id INT(11) NOT NULL,
+      user_id INT(11) NOT NULL,
+      role VARCHAR(20) NOT NULL DEFAULT 'member',
+      joined_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      UNIQUE KEY uniq_team_user (team_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS tournaments (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      name VARCHAR(120) NOT NULL,
+      format VARCHAR(20) NOT NULL DEFAULT 'SE',
+      max_teams INT(11) NOT NULL DEFAULT 8,
+      region VARCHAR(20) DEFAULT NULL,
+      prize_pool VARCHAR(60) DEFAULT NULL,
+      starts_at DATETIME DEFAULT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'open',
+      created_by INT(11) DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS tournament_registrations (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      tournament_id INT(11) NOT NULL,
+      team_id INT(11) NOT NULL,
+      checked_in TINYINT(1) NOT NULL DEFAULT 0,
+      registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      UNIQUE KEY uniq_tourn_team (tournament_id, team_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS match_history (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      user_id INT(11) NOT NULL,
+      match_id VARCHAR(80) NOT NULL,
+      map VARCHAR(40) DEFAULT NULL,
+      mode VARCHAR(40) DEFAULT NULL,
+      result VARCHAR(2) DEFAULT NULL,
+      rounds_won INT(11) NOT NULL DEFAULT 0,
+      rounds_lost INT(11) NOT NULL DEFAULT 0,
+      agent VARCHAR(40) DEFAULT NULL,
+      kills INT(11) NOT NULL DEFAULT 0,
+      deaths INT(11) NOT NULL DEFAULT 0,
+      assists INT(11) NOT NULL DEFAULT 0,
+      headshot_pct INT(11) NOT NULL DEFAULT 0,
+      avg_damage INT(11) NOT NULL DEFAULT 0,
+      played_at DATETIME DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      UNIQUE KEY uniq_user_match (user_id, match_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS tournament_matches (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      tournament_id INT(11) NOT NULL,
+      round INT(11) NOT NULL,
+      slot INT(11) NOT NULL,
+      team1_id INT(11) DEFAULT NULL,
+      team2_id INT(11) DEFAULT NULL,
+      score1 INT(11) NOT NULL DEFAULT 0,
+      score2 INT(11) NOT NULL DEFAULT 0,
+      winner_id INT(11) DEFAULT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'upcoming',
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+
   // 4. Seed a few products if the table is empty
   const [[{ cnt: productCount }]] = await pool.query('SELECT COUNT(*) AS cnt FROM products');
   if (productCount === 0) {
@@ -258,32 +311,16 @@ const initDb = async () => {
   console.log('DB schema ready');
 };
 
-const getSessionUser = async (req) => {
-  const userId = getSessionUserId(req);
-  if (!userId) return null;
-  return getUserById(userId);
-};
-
-const requireAdmin = async (req, res) => {
-  const user = await getSessionUser(req);
-  if (!user) { sendJson(res, 401, { success: false, error: 'Non authentifie' }); return null; }
-  if (!user.is_admin) { sendJson(res, 403, { success: false, error: 'Acces reserve aux administrateurs' }); return null; }
-  return user;
-};
-
+// ── Session helpers ─────────────────────────────────────────
 const getBearerToken = (req) => {
   const auth = req.headers.authorization || '';
-  if (!auth.startsWith('Bearer ')) {
-    return null;
-  }
+  if (!auth.startsWith('Bearer ')) return null;
   return auth.slice(7).trim();
 };
 
 const getSessionUserId = (req) => {
   const token = getBearerToken(req);
-  if (!token || !sessions.has(token)) {
-    return null;
-  }
+  if (!token || !sessions.has(token)) return null;
   return sessions.get(token);
 };
 
@@ -293,788 +330,1125 @@ const createSession = (userId) => {
   return token;
 };
 
-const server = http.createServer(async (req, res) => {
-  setCors(res);
+// ── Auth middleware ─────────────────────────────────────────
+// Populates req.userId for any logged-in caller; 401 otherwise.
+const requireAuth = (req, res, next) => {
+  const userId = getSessionUserId(req);
+  if (!userId) { res.status(401).json({ success: false, error: 'Non authentifie' }); return; }
+  req.userId = userId;
+  next();
+};
 
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+// Populates req.user with the full admin row; 401/403 otherwise.
+const requireAdmin = async (req, res, next) => {
+  const userId = getSessionUserId(req);
+  const user = userId ? await getUserById(userId) : null;
+  if (!user) { res.status(401).json({ success: false, error: 'Non authentifie' }); return; }
+  if (!user.is_admin) { res.status(403).json({ success: false, error: 'Acces reserve aux administrateurs' }); return; }
+  req.user = user;
+  next();
+};
+
+// ── Express app ─────────────────────────────────────────────
+const app = express();
+app.use(cors({
+  origin: CORS_ORIGIN,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+// Large limit: avatars are uploaded as base64 data URLs (stored in MEDIUMTEXT).
+app.use(express.json({ limit: '20mb' }));
+
+app.get('/health', async (req, res) => {
+  await pool.query('SELECT 1');
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════
+//  AUTH
+// ════════════════════════════════════════════════════════
+app.post('/auth/register', async (req, res) => {
+  const body = req.body || {};
+  const username = String(body.username || '').trim();
+  const email = String(body.email || '').trim().toLowerCase();
+  const password = String(body.password || '');
+
+  if (!username || !email || !password) {
+    return res.status(400).json({ success: false, error: 'Champs requis manquants' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ success: false, error: 'Le mot de passe doit contenir au moins 6 caracteres' });
   }
 
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+  const existing = await getUserByEmail(email);
+  if (existing) {
+    return res.status(409).json({ success: false, error: 'Cet email est deja utilise' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  const [insertResult] = await pool.execute(
+    'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+    [username, email, passwordHash]
+  );
+
+  const user = await getUserById(insertResult.insertId);
+  const token = createSession(user.id);
+  res.status(201).json({ success: true, user: sanitizeUser(user), token });
+});
+
+app.post('/auth/login', async (req, res) => {
+  const body = req.body || {};
+  const email = String(body.email || '').trim().toLowerCase();
+  const password = String(body.password || '');
+
+  const user = await getUserByEmail(email);
+  if (!user) {
+    return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
+  }
+
+  const valid = await bcrypt.compare(password, user.password_hash);
+  if (!valid) {
+    return res.status(401).json({ success: false, error: 'Email ou mot de passe incorrect' });
+  }
+
+  if (user.banned) {
+    return res.status(403).json({ success: false, error: 'Ce compte a été banni.' });
+  }
+
+  const token = createSession(user.id);
+  res.json({ success: true, user: sanitizeUser(user), token });
+});
+
+app.get('/auth/me', async (req, res) => {
+  const token = getBearerToken(req);
+  if (!token || !sessions.has(token)) {
+    return res.json({ success: true });
+  }
+  const userId = sessions.get(token);
+  const user = await getUserById(userId);
+  if (!user) {
+    sessions.delete(token);
+    return res.json({ success: true });
+  }
+  res.json({ success: true, user: sanitizeUser(user) });
+});
+
+app.post('/auth/logout', (req, res) => {
+  const token = getBearerToken(req);
+  if (token) sessions.delete(token);
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════
+//  USERS — profile + password (self only)
+// ════════════════════════════════════════════════════════
+app.put('/users/:id/profile', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) {
+    return res.status(403).json({ success: false, error: 'Acces refuse' });
+  }
+
+  const body = req.body || {};
+  const currentUser = await getUserById(userId);
+  if (!currentUser) {
+    return res.status(404).json({ success: false, error: 'Utilisateur introuvable' });
+  }
+
+  // Check email uniqueness before building update
+  if (body.email !== undefined) {
+    const e = String(body.email || '').trim().toLowerCase();
+    if (e && e !== currentUser.email) {
+      const existing = await getUserByEmail(e);
+      if (existing && existing.id !== userId) {
+        return res.status(409).json({ success: false, error: 'Cet email est deja utilise' });
+      }
+    }
+  }
+
+  // Build partial update — only fields explicitly present in the body
+  const updates = {};
+  if (body.username !== undefined) {
+    const u = String(body.username || '').trim();
+    updates.username = u || currentUser.username;
+  }
+  if (body.email !== undefined) {
+    const e = String(body.email || '').trim().toLowerCase();
+    updates.email = e || currentUser.email;
+  }
+  if (body.riotId  !== undefined) updates.riot_id    = String(body.riotId  || '').trim() || null;
+  if (body.tagLine !== undefined) updates.tag_line   = String(body.tagLine || '').trim() || null;
+  if (body.bio     !== undefined) updates.bio        = String(body.bio     || '').trim() || null;
+  if (body.discord !== undefined) updates.discord    = String(body.discord || '').trim() || null;
+  if (body.twitter !== undefined) updates.twitter    = String(body.twitter || '').trim() || null;
+  if (body.twitch  !== undefined) updates.twitch     = String(body.twitch  || '').trim() || null;
+  if (body.youtube !== undefined) updates.youtube    = String(body.youtube || '').trim() || null;
+  if (body.avatarUrl !== undefined) updates.avatar_url = String(body.avatarUrl || '').trim() || null;
+  if (body.rankLabel  !== undefined) updates.rank_label = String(body.rankLabel  || '').trim() || null;
+  if (body.region     !== undefined) updates.region     = String(body.region     || '').trim() || null;
+  if (body.roles      !== undefined) updates.roles      = Array.isArray(body.roles)     ? JSON.stringify(body.roles)     : null;
+  if (body.languages  !== undefined) updates.languages  = Array.isArray(body.languages) ? JSON.stringify(body.languages) : null;
+  if (body.playtimes  !== undefined) updates.playtimes  = Array.isArray(body.playtimes) ? JSON.stringify(body.playtimes) : null;
+  if (body.showInLfg  !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
+  if (body.lfgStatus  !== undefined) updates.lfg_status  = ['lfg', 'busy'].includes(body.lfgStatus) ? body.lfgStatus : 'lfg';
+
+  if (Object.keys(updates).length > 0) {
+    const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), userId]);
+  }
+
+  const updatedUser = await getUserById(userId);
+  if (!updatedUser) {
+    return res.status(404).json({ success: false, error: 'Utilisateur introuvable' });
+  }
+  res.json({ success: true, user: sanitizeUser(updatedUser) });
+});
+
+app.put('/users/:id/password', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) {
+    return res.status(403).json({ success: false, error: 'Acces refuse' });
+  }
+
+  const body = req.body || {};
+  const password = String(body.password || '');
+  if (password.length < 6) {
+    return res.status(400).json({ success: false, error: 'Le mot de passe doit contenir au moins 6 caracteres' });
+  }
+
+  const currentUser = await getUserById(userId);
+  if (!currentUser) {
+    return res.status(404).json({ success: false, error: 'Utilisateur introuvable' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
+  res.json({ success: true });
+});
+
+// Persisted match history for a player (public — used by the Stats dashboard).
+app.get('/users/:id/matches', async (req, res) => {
+  const matches = await getMatchHistory(Number(req.params.id));
+  res.json({ success: true, matches });
+});
+
+// Pull the caller's latest matches from Riot and persist them (self only).
+// Idempotent: already-stored matches are skipped (UNIQUE user_id+match_id).
+app.post('/users/:id/sync', requireAuth, async (req, res) => {
+  const userId = Number(req.params.id);
+  if (req.userId !== userId) return res.status(403).json({ success: false, error: 'Acces refuse' });
+
+  const u = await getUserById(userId);
+  if (!u) return res.status(404).json({ success: false, error: 'Utilisateur introuvable' });
+
+  const body = req.body || {};
+  const name = String(body.name || u.riot_id || '').trim();
+  const tag = String(body.tag || u.tag_line || '').trim();
+  if (!name || !tag) {
+    return res.status(400).json({ success: false, error: 'Aucun Riot ID — connecte ton compte dans Profil' });
+  }
+  if (!process.env.RIOT_API_KEY) {
+    return res.status(503).json({ success: false, needsApiKey: true, error: 'Clé API Riot manquante (RIOT_API_KEY dans .env)' });
+  }
+
+  const fetched = await riotFetchMatches(name, tag, 10);
+  let synced = 0;
+  for (const m of fetched) {
+    if (!m.matchId) continue;
+    const playedAt = m.startMillis ? new Date(m.startMillis).toISOString().slice(0, 19).replace('T', ' ') : null;
+    const [r] = await pool.execute(
+      `INSERT IGNORE INTO match_history
+        (user_id, match_id, map, mode, result, rounds_won, rounds_lost, agent, kills, deaths, assists, headshot_pct, avg_damage, played_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userId, m.matchId, m.map, m.mode, m.result, m.roundsWon, m.roundsLost, m.agent, m.kills, m.deaths, m.assists, m.headshotPct, m.avgDamage, playedAt]
+    );
+    if (r.affectedRows > 0) synced += 1;
+  }
+
+  // Refresh the player's rank from the most recent ranked match, if available.
+  const latestRank = fetched.find(x => x.rank)?.rank || null;
+  if (latestRank) await pool.execute('UPDATE users SET rank_label = ? WHERE id = ?', [latestRank, userId]);
+
+  res.json({ success: true, synced, fetched: fetched.length, rankLabel: latestRank, matches: await getMatchHistory(userId) });
+});
+
+// ════════════════════════════════════════════════════════
+//  RIOT proxy — official Riot API
+// ════════════════════════════════════════════════════════
+const TIER_NAMES = [
+  'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
+  'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
+  'Gold 1','Gold 2','Gold 3','Platinum 1','Platinum 2','Platinum 3',
+  'Diamond 1','Diamond 2','Diamond 3','Ascendant 1','Ascendant 2','Ascendant 3',
+  'Immortal 1','Immortal 2','Immortal 3','Radiant',
+];
+
+// Fetch + normalise a player's recent matches from the official Riot API.
+// Returns [] on any failure (missing/expired key, unknown player, network).
+// Shared by GET /riot/matches and the persistence sync endpoint.
+const riotFetchMatches = async (name, tag, size) => {
+  const apiKey = process.env.RIOT_API_KEY || '';
+  if (!apiKey) return [];
+  const riotHeaders = { 'X-Riot-Token': apiKey };
+  const region = process.env.RIOT_REGION || 'eu';
+  try {
+    const accountRes = await fetch(
+      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+      { headers: riotHeaders }
+    );
+    if (!accountRes.ok) return [];
+    const { puuid } = await accountRes.json();
+
+    const matchListRes = await fetch(
+      `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
+      { headers: riotHeaders }
+    );
+    if (!matchListRes.ok) return [];
+    const matchList = await matchListRes.json();
+    const recentIds = (matchList.history || []).slice(0, size).map((m) => m.matchId);
+
+    const details = await Promise.all(
+      recentIds.map((id) =>
+        fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+      )
+    );
+
+    return details
+      .filter(Boolean)
+      .map((match) => {
+        const player = match.players?.find((p) => p.puuid === puuid);
+        if (!player) return null;
+        const myTeam = match.teams?.find((t) => t.teamId === player.teamId);
+        const won = myTeam?.won === true;
+        const mapId = match.matchInfo?.mapId || '';
+        const startMillis = match.matchInfo?.gameStartMillis || 0;
+        return {
+          matchId: match.matchInfo?.matchId || '',
+          map: mapId.split('/').pop() || 'Unknown',
+          mode: match.matchInfo?.queueId || 'unrated',
+          startMillis,
+          date: startMillis ? new Date(startMillis).toLocaleDateString('fr-FR') : '',
+          result: won ? 'W' : 'L',
+          roundsWon: myTeam?.roundsWon || 0,
+          roundsLost: (match.matchInfo?.numberOfRounds || 0) - (myTeam?.roundsWon || 0),
+          agent: player.characterId || 'Unknown',
+          agentImage: null,
+          kills: player.stats?.kills || 0,
+          deaths: player.stats?.deaths || 0,
+          assists: player.stats?.assists || 0,
+          headshotPct: (player.stats?.kills || 0) > 0
+            ? Math.round(((player.stats?.headshots || 0) / player.stats.kills) * 100)
+            : 0,
+          avgDamage: (match.matchInfo?.numberOfRounds || 0) > 0
+            ? Math.round((player.stats?.score || 0) / match.matchInfo.numberOfRounds)
+            : 0,
+          rank: player.competitiveTier ? (TIER_NAMES[player.competitiveTier] || '') : '',
+        };
+      })
+      .filter(Boolean);
+  } catch (err) {
+    console.error('Riot matches error:', err);
+    return [];
+  }
+};
+
+// Map persisted match_history rows to the MatchWithUser shape the UI consumes
+// (plus extra fields for the dashboard).
+const getMatchHistory = async (userId, limit = 20) => {
+  const [rows] = await pool.query(
+    'SELECT * FROM match_history WHERE user_id = ? ORDER BY played_at DESC, id DESC LIMIT ?',
+    [userId, limit]
+  );
+  return rows.map(r => ({
+    id: r.id,
+    user_id: r.user_id,
+    map_name: r.map,
+    score_home: r.rounds_won,
+    score_away: r.rounds_lost,
+    result: r.result,
+    agent_played: r.agent,
+    kills: r.kills,
+    deaths: r.deaths,
+    assists: r.assists,
+    played_at: r.played_at,
+    mode: r.mode,
+    headshotPct: r.headshot_pct,
+    avgDamage: r.avg_damage,
+    roundsWon: r.rounds_won,
+    roundsLost: r.rounds_lost,
+  }));
+};
+
+app.get('/riot/player/:name/:tag', async (req, res) => {
+  const name = req.params.name;
+  const tag = req.params.tag;
+  const apiKey = process.env.RIOT_API_KEY || '';
+
+  if (!apiKey) {
+    return res.status(503).json({ success: false, needsApiKey: true, error: 'Clé API Riot manquante dans le fichier .env (RIOT_API_KEY=RGAPI-...)' });
+  }
+
+  const riotHeaders = { 'X-Riot-Token': apiKey };
 
   try {
-    if (req.method === 'GET' && url.pathname === '/health') {
-      await pool.query('SELECT 1');
-      sendJson(res, 200, { success: true });
-      return;
+    // 1. Account lookup (global endpoint)
+    const accountRes = await fetch(
+      `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+      { headers: riotHeaders }
+    );
+
+    if (accountRes.status === 401 || accountRes.status === 403) {
+      return res.status(503).json({ success: false, needsApiKey: true, error: 'Clé API Riot invalide ou expirée. Renouvelle-la sur developer.riotgames.com (valide 24h).' });
+    }
+    if (!accountRes.ok) {
+      return res.status(404).json({ success: false, error: 'Joueur introuvable. Vérifie le pseudo et le tag.' });
     }
 
-    if (req.method === 'POST' && url.pathname === '/auth/register') {
-      const body = await readJsonBody(req);
-      const username = String(body.username || '').trim();
-      const email = String(body.email || '').trim().toLowerCase();
-      const password = String(body.password || '');
+    const accountData = await accountRes.json();
+    const puuid = accountData.puuid;
+    const region = process.env.RIOT_REGION || 'eu';
 
-      if (!username || !email || !password) {
-        sendJson(res, 400, { success: false, error: 'Champs requis manquants' });
-        return;
-      }
+    // 2. Recent match list
+    const matchListRes = await fetch(
+      `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
+      { headers: riotHeaders }
+    );
+    const matchList = matchListRes.ok ? await matchListRes.json() : null;
 
-      if (password.length < 6) {
-        sendJson(res, 400, { success: false, error: 'Le mot de passe doit contenir au moins 6 caracteres' });
-        return;
-      }
-
-      const existing = await getUserByEmail(email);
-      if (existing) {
-        sendJson(res, 409, { success: false, error: 'Cet email est deja utilise' });
-        return;
-      }
-
-      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      const [insertResult] = await pool.execute(
-        'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-        [username, email, passwordHash]
+    // 3. Get details of last 3 matches to infer rank + stats
+    let currentTier = null;
+    let currentTierName = null;
+    if (matchList?.history?.length) {
+      const recentIds = matchList.history.slice(0, 3).map((m) => m.matchId);
+      const details = await Promise.all(
+        recentIds.map((id) =>
+          fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
+            .then((r) => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
       );
-
-      const user = await getUserById(insertResult.insertId);
-      const token = createSession(user.id);
-      sendJson(res, 201, { success: true, user: sanitizeUser(user), token });
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/auth/login') {
-      const body = await readJsonBody(req);
-      const email = String(body.email || '').trim().toLowerCase();
-      const password = String(body.password || '');
-
-      const user = await getUserByEmail(email);
-      if (!user) {
-        sendJson(res, 401, { success: false, error: 'Email ou mot de passe incorrect' });
-        return;
-      }
-
-      const valid = await bcrypt.compare(password, user.password_hash);
-      if (!valid) {
-        sendJson(res, 401, { success: false, error: 'Email ou mot de passe incorrect' });
-        return;
-      }
-
-      if (user.banned) {
-        sendJson(res, 403, { success: false, error: 'Ce compte a été banni.' });
-        return;
-      }
-
-      const token = createSession(user.id);
-      sendJson(res, 200, { success: true, user: sanitizeUser(user), token });
-      return;
-    }
-
-    if (req.method === 'GET' && url.pathname === '/auth/me') {
-      const token = getBearerToken(req);
-      if (!token || !sessions.has(token)) {
-        sendJson(res, 200, { success: true });
-        return;
-      }
-
-      const userId = sessions.get(token);
-      const user = await getUserById(userId);
-      if (!user) {
-        sessions.delete(token);
-        sendJson(res, 200, { success: true });
-        return;
-      }
-
-      sendJson(res, 200, { success: true, user: sanitizeUser(user) });
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/auth/logout') {
-      const token = getBearerToken(req);
-      if (token) {
-        sessions.delete(token);
-      }
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    if (req.method === 'PUT' && /^\/users\/\d+\/profile$/.test(url.pathname)) {
-      const match = url.pathname.match(/^\/users\/(\d+)\/profile$/);
-      const userId = Number(match?.[1]);
-      const sessionUserId = getSessionUserId(req);
-
-      if (!sessionUserId) {
-        sendJson(res, 401, { success: false, error: 'Non authentifie' });
-        return;
-      }
-
-      if (sessionUserId !== userId) {
-        sendJson(res, 403, { success: false, error: 'Acces refuse' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-
-      const currentUser = await getUserById(userId);
-      if (!currentUser) {
-        sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' });
-        return;
-      }
-
-      // Check email uniqueness before building update
-      if (body.email !== undefined) {
-        const e = String(body.email || '').trim().toLowerCase();
-        if (e && e !== currentUser.email) {
-          const existing = await getUserByEmail(e);
-          if (existing && existing.id !== userId) {
-            sendJson(res, 409, { success: false, error: 'Cet email est deja utilise' });
-            return;
-          }
+      for (const match of details) {
+        if (!match) continue;
+        const player = match.players?.find((p) => p.puuid === puuid);
+        if (player?.competitiveTier && player.competitiveTier > 0) {
+          currentTier = player.competitiveTier;
+          break;
         }
       }
-
-      // Build partial update — only fields explicitly present in the body
-      const updates = {};
-      if (body.username !== undefined) {
-        const u = String(body.username || '').trim();
-        updates.username = u || currentUser.username;
-      }
-      if (body.email !== undefined) {
-        const e = String(body.email || '').trim().toLowerCase();
-        updates.email = e || currentUser.email;
-      }
-      if (body.riotId  !== undefined) updates.riot_id    = String(body.riotId  || '').trim() || null;
-      if (body.tagLine !== undefined) updates.tag_line   = String(body.tagLine || '').trim() || null;
-      if (body.bio     !== undefined) updates.bio        = String(body.bio     || '').trim() || null;
-      if (body.discord !== undefined) updates.discord    = String(body.discord || '').trim() || null;
-      if (body.twitter !== undefined) updates.twitter    = String(body.twitter || '').trim() || null;
-      if (body.twitch  !== undefined) updates.twitch     = String(body.twitch  || '').trim() || null;
-      if (body.youtube !== undefined) updates.youtube    = String(body.youtube || '').trim() || null;
-      if (body.avatarUrl !== undefined) updates.avatar_url = String(body.avatarUrl || '').trim() || null;
-      if (body.rankLabel  !== undefined) updates.rank_label = String(body.rankLabel  || '').trim() || null;
-      if (body.region     !== undefined) updates.region     = String(body.region     || '').trim() || null;
-      if (body.roles      !== undefined) updates.roles      = Array.isArray(body.roles)     ? JSON.stringify(body.roles)     : null;
-      if (body.languages  !== undefined) updates.languages  = Array.isArray(body.languages) ? JSON.stringify(body.languages) : null;
-      if (body.playtimes  !== undefined) updates.playtimes  = Array.isArray(body.playtimes) ? JSON.stringify(body.playtimes) : null;
-      if (body.showInLfg  !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
-      if (body.lfgStatus  !== undefined) updates.lfg_status  = ['lfg', 'busy'].includes(body.lfgStatus) ? body.lfgStatus : 'lfg';
-
-      if (Object.keys(updates).length > 0) {
-        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-        await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), userId]);
-      }
-
-      const updatedUser = await getUserById(userId);
-      if (!updatedUser) {
-        sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' });
-        return;
-      }
-
-      sendJson(res, 200, { success: true, user: sanitizeUser(updatedUser) });
-      return;
     }
 
-    if (req.method === 'PUT' && /^\/users\/\d+\/password$/.test(url.pathname)) {
-      const match = url.pathname.match(/^\/users\/(\d+)\/password$/);
-      const userId = Number(match?.[1]);
-      const sessionUserId = getSessionUserId(req);
-
-      if (!sessionUserId) {
-        sendJson(res, 401, { success: false, error: 'Non authentifie' });
-        return;
-      }
-
-      if (sessionUserId !== userId) {
-        sendJson(res, 403, { success: false, error: 'Acces refuse' });
-        return;
-      }
-
-      const body = await readJsonBody(req);
-      const password = String(body.password || '');
-
-      if (password.length < 6) {
-        sendJson(res, 400, { success: false, error: 'Le mot de passe doit contenir au moins 6 caracteres' });
-        return;
-      }
-
-      const currentUser = await getUserById(userId);
-      if (!currentUser) {
-        sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' });
-        return;
-      }
-
-      const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-      await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
-      sendJson(res, 200, { success: true });
-      return;
+    if (currentTier !== null) {
+      currentTierName = TIER_NAMES[currentTier] ?? 'Non classé';
     }
 
-    // Riot proxy — player profile (official Riot API)
-    const riotPlayerMatch = url.pathname.match(/^\/riot\/player\/([^/]+)\/([^/]+)$/);
-    if (req.method === 'GET' && riotPlayerMatch) {
-      const name = decodeURIComponent(riotPlayerMatch[1]);
-      const tag  = decodeURIComponent(riotPlayerMatch[2]);
-      const apiKey = process.env.RIOT_API_KEY || '';
-
-      if (!apiKey) {
-        sendJson(res, 503, { success: false, needsApiKey: true, error: 'Clé API Riot manquante dans le fichier .env (RIOT_API_KEY=RGAPI-...)' });
-        return;
-      }
-
-      const riotHeaders = { 'X-Riot-Token': apiKey };
-
-      try {
-        // 1. Account lookup (global endpoint)
-        const accountRes = await fetch(
-          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
-          { headers: riotHeaders }
-        );
-
-        if (accountRes.status === 401 || accountRes.status === 403) {
-          sendJson(res, 503, { success: false, needsApiKey: true, error: 'Clé API Riot invalide ou expirée. Renouvelle-la sur developer.riotgames.com (valide 24h).' });
-          return;
-        }
-        if (!accountRes.ok) {
-          sendJson(res, 404, { success: false, error: 'Joueur introuvable. Vérifie le pseudo et le tag.' });
-          return;
-        }
-
-        const accountData = await accountRes.json();
-        const puuid = accountData.puuid;
-        const region = process.env.RIOT_REGION || 'eu';
-
-        // 2. Recent match list
-        const matchListRes = await fetch(
-          `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
-          { headers: riotHeaders }
-        );
-        const matchList = matchListRes.ok ? await matchListRes.json() : null;
-
-        // 3. Get details of last 3 matches to infer rank + stats
-        let currentTier = null;
-        let currentTierName = null;
-        if (matchList?.history?.length) {
-          const recentIds = matchList.history.slice(0, 3).map((m) => m.matchId);
-          const details = await Promise.all(
-            recentIds.map((id) =>
-              fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
-                .then((r) => (r.ok ? r.json() : null))
-                .catch(() => null)
-            )
-          );
-          for (const match of details) {
-            if (!match) continue;
-            const player = match.players?.find((p) => p.puuid === puuid);
-            if (player?.competitiveTier && player.competitiveTier > 0) {
-              currentTier = player.competitiveTier;
-              break;
-            }
-          }
-        }
-
-        // Valorant tier names
-        const TIER_NAMES = [
-          'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
-          'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
-          'Gold 1','Gold 2','Gold 3','Platinum 1','Platinum 2','Platinum 3',
-          'Diamond 1','Diamond 2','Diamond 3','Ascendant 1','Ascendant 2','Ascendant 3',
-          'Immortal 1','Immortal 2','Immortal 3','Radiant',
-        ];
-        if (currentTier !== null) {
-          currentTierName = TIER_NAMES[currentTier] ?? 'Non classé';
-        }
-
-        sendJson(res, 200, {
-          success: true,
-          account: {
-            puuid,
-            name: accountData.gameName,
-            tag: accountData.tagLine,
-            account_level: null,
-          },
-          mmr: currentTier !== null ? {
-            current_data: {
-              currenttier: currentTier,
-              currenttierpatched: currentTierName,
-              ranking_in_tier: 0,
-              mmr_change_to_last_game: 0,
-              elo: 0,
-              old: false,
-            },
-          } : null,
-          puuid,
-          region,
-        });
-      } catch (err) {
-        console.error('Riot player error:', err);
-        sendJson(res, 502, { success: false, error: 'Erreur lors de la connexion aux serveurs Riot' });
-      }
-      return;
-    }
-
-    // Riot proxy — match history (official Riot API)
-    const riotMatchesMatch = url.pathname.match(/^\/riot\/matches\/([^/]+)\/([^/]+)$/);
-    if (req.method === 'GET' && riotMatchesMatch) {
-      const name = decodeURIComponent(riotMatchesMatch[1]);
-      const tag  = decodeURIComponent(riotMatchesMatch[2]);
-      const size = Math.min(Number(url.searchParams.get('size') || '5'), 8);
-      const apiKey = process.env.RIOT_API_KEY || '';
-
-      if (!apiKey) {
-        sendJson(res, 200, { success: true, matches: [] });
-        return;
-      }
-
-      const riotHeaders = { 'X-Riot-Token': apiKey };
-      const region = process.env.RIOT_REGION || 'eu';
-
-      try {
-        // Get PUUID
-        const accountRes = await fetch(
-          `https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
-          { headers: riotHeaders }
-        );
-        if (!accountRes.ok) { sendJson(res, 200, { success: true, matches: [] }); return; }
-        const { puuid } = await accountRes.json();
-
-        // Get match list
-        const matchListRes = await fetch(
-          `https://${region}.api.riotgames.com/val/match/v1/matchlists/by-puuid/${puuid}`,
-          { headers: riotHeaders }
-        );
-        if (!matchListRes.ok) { sendJson(res, 200, { success: true, matches: [] }); return; }
-        const matchList = await matchListRes.json();
-        const recentIds = (matchList.history || []).slice(0, size).map((m) => m.matchId);
-
-        // Get match details in parallel
-        const details = await Promise.all(
-          recentIds.map((id) =>
-            fetch(`https://${region}.api.riotgames.com/val/match/v1/matches/${id}`, { headers: riotHeaders })
-              .then((r) => (r.ok ? r.json() : null))
-              .catch(() => null)
-          )
-        );
-
-        const TIER_NAMES = [
-          'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
-          'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
-          'Gold 1','Gold 2','Gold 3','Platinum 1','Platinum 2','Platinum 3',
-          'Diamond 1','Diamond 2','Diamond 3','Ascendant 1','Ascendant 2','Ascendant 3',
-          'Immortal 1','Immortal 2','Immortal 3','Radiant',
-        ];
-
-        const matches = details
-          .filter(Boolean)
-          .map((match) => {
-            const player = match.players?.find((p) => p.puuid === puuid);
-            if (!player) return null;
-
-            const myTeam = match.teams?.find((t) => t.teamId === player.teamId);
-            const won = myTeam?.won === true;
-            const mapId = match.matchInfo?.mapId || '';
-            const mapName = mapId.split('/').pop() || 'Unknown';
-
-            return {
-              matchId: match.matchInfo?.matchId || '',
-              map: mapName,
-              mode: match.matchInfo?.queueId || 'unrated',
-              date: match.matchInfo?.gameStartMillis
-                ? new Date(match.matchInfo.gameStartMillis).toLocaleDateString('fr-FR')
-                : '',
-              result: won ? 'W' : 'L',
-              roundsWon: myTeam?.roundsWon || 0,
-              roundsLost: (match.matchInfo?.numberOfRounds || 0) - (myTeam?.roundsWon || 0),
-              agent: player.characterId || 'Unknown',
-              agentImage: null,
-              kills: player.stats?.kills || 0,
-              deaths: player.stats?.deaths || 0,
-              assists: player.stats?.assists || 0,
-              headshotPct: (player.stats?.kills || 0) > 0
-                ? Math.round(((player.stats?.headshots || 0) / player.stats.kills) * 100)
-                : 0,
-              avgDamage: (match.matchInfo?.numberOfRounds || 0) > 0
-                ? Math.round((player.stats?.score || 0) / match.matchInfo.numberOfRounds)
-                : 0,
-              rank: player.competitiveTier ? (TIER_NAMES[player.competitiveTier] || '') : '',
-            };
-          })
-          .filter(Boolean);
-
-        sendJson(res, 200, { success: true, matches });
-      } catch (err) {
-        console.error('Riot matches error:', err);
-        sendJson(res, 200, { success: true, matches: [] });
-      }
-      return;
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  ESPORTS — vlr.gg proxy (real Valorant data, no token needed)
-    // ════════════════════════════════════════════════════════
-    if (req.method === 'GET' && url.pathname.startsWith('/esports/')) {
-      try {
-        let data = [];
-        if (url.pathname === '/esports/tournaments/running') {
-          data = await fetchVlr('/events?status=ongoing');
-        } else if (url.pathname === '/esports/tournaments/upcoming') {
-          data = await fetchVlr('/events?status=upcoming');
-        } else if (url.pathname === '/esports/matches/running') {
-          // vlr returns upcoming + live in one feed; the client keeps the live ones.
-          data = await fetchVlr('/matches');
-        } else if (url.pathname === '/esports/matches/results') {
-          data = await fetchVlr('/results');
-        } else if (/^\/esports\/tournaments\/(\d+)\/brackets$/.test(url.pathname)) {
-          // vlr.gg has no per-event bracket feed via this wrapper — return empty.
-          data = [];
-        } else {
-          sendJson(res, 404, { success: false, error: 'Route esports introuvable' });
-          return;
-        }
-        sendJson(res, 200, { success: true, configured: true, data });
-      } catch (err) {
-        console.error('vlr.gg proxy error:', err);
-        sendJson(res, 200, { success: true, configured: true, data: [] });
-      }
-      return;
-    }
-
-    // GET /users/lfg — public list of users who opted in to appear in LFG page
-    if (req.method === 'GET' && url.pathname === '/users/lfg') {
-      const [rows] = await pool.execute(
-        `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status, avatar_url FROM users WHERE show_in_lfg = 1`
-      );
-      const players = rows.map(r => ({
-        id: r.id,
-        username: r.username,
-        riotId: r.riot_id || null,
-        tagLine: r.tag_line || null,
-        bio: r.bio || null,
-        discord: r.discord || null,
-        twitter: r.twitter || null,
-        twitch: r.twitch || null,
-        youtube: r.youtube || null,
-        avatarUrl: r.avatar_url || null,
-        rankLabel: r.rank_label || null,
-        roles: parseJsonCol(r.roles),
-        region: r.region || null,
-        languages: parseJsonCol(r.languages),
-        playtimes: parseJsonCol(r.playtimes),
-        lfgStatus: r.lfg_status || 'lfg',
-      }));
-      sendJson(res, 200, { success: true, players });
-      return;
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  SHOP — public
-    // ════════════════════════════════════════════════════════
-
-    // GET /products — public catalogue from DB
-    if (req.method === 'GET' && url.pathname === '/products') {
-      const [rows] = await pool.query(
-        'SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id ASC'
-      );
-      const products = rows.map(r => ({
-        id: Number(r.id),
-        name: r.name,
-        price: Number(r.price),
-        category: r.category,
-        image_url: r.image_url,
-        stock_quantity: Number(r.stock_quantity),
-      }));
-      sendJson(res, 200, { success: true, products });
-      return;
-    }
-
-    // POST /orders — create an order (authenticated)
-    if (req.method === 'POST' && url.pathname === '/orders') {
-      const sessionUserId = getSessionUserId(req);
-      if (!sessionUserId) { sendJson(res, 401, { success: false, error: 'Non authentifie' }); return; }
-
-      const body = await readJsonBody(req);
-      const totalTtc = Number(body.total_ttc || 0);
-      const method = ['Card', 'PayPal', 'Crypto'].includes(body.payment_method) ? body.payment_method : 'Card';
-      const items = Array.isArray(body.items) ? body.items : [];
-
-      const [orderResult] = await pool.execute(
-        'INSERT INTO orders (user_id, total_ttc, payment_method, status) VALUES (?, ?, ?, ?)',
-        [sessionUserId, totalTtc, method, 'Paid']
-      );
-      const orderId = orderResult.insertId;
-
-      for (const it of items) {
-        const pid = Number(it.product_id);
-        const qty = Number(it.quantity) || 1;
-        const price = Number(it.price_at_purchase) || 0;
-        if (!pid) continue;
-        await pool.execute(
-          'INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)',
-          [orderId, pid, qty, price]
-        );
-        await pool.execute(
-          'UPDATE products SET stock_quantity = GREATEST(stock_quantity - ?, 0) WHERE id = ?',
-          [qty, pid]
-        );
-      }
-
-      sendJson(res, 201, { success: true, orderId });
-      return;
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  ADMIN — protected (is_admin required)
-    // ════════════════════════════════════════════════════════
-
-    // GET /admin/overview — dashboard metrics
-    if (req.method === 'GET' && url.pathname === '/admin/overview') {
-      if (!(await requireAdmin(req, res))) return;
-
-      const [[{ users }]]    = await pool.query('SELECT COUNT(*) AS users FROM users');
-      const [[{ admins }]]   = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
-      const [[{ lfg }]]      = await pool.query('SELECT COUNT(*) AS lfg FROM users WHERE show_in_lfg = 1');
-      const [[{ products }]] = await pool.query('SELECT COUNT(*) AS products FROM products');
-      const [[{ orders }]]   = await pool.query('SELECT COUNT(*) AS orders FROM orders');
-      const [[{ revenue }]]  = await pool.query("SELECT COALESCE(SUM(total_ttc),0) AS revenue FROM orders WHERE status != 'Cancelled'");
-      const [[{ stock }]]    = await pool.query('SELECT COALESCE(SUM(stock_quantity),0) AS stock FROM products');
-
-      const [recentUsers] = await pool.query(
-        'SELECT id, username, email, created_at, is_admin FROM users ORDER BY id DESC LIMIT 5'
-      );
-      const [recentOrders] = await pool.query(`
-        SELECT o.id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username
-        FROM orders o LEFT JOIN users u ON u.id = o.user_id
-        ORDER BY o.id DESC LIMIT 6
-      `);
-      const [signups] = await pool.query(`
-        SELECT DATE(created_at) AS day, COUNT(*) AS count
-        FROM users GROUP BY DATE(created_at) ORDER BY day DESC LIMIT 7
-      `);
-
-      sendJson(res, 200, {
-        success: true,
-        metrics: {
-          users: Number(users), admins: Number(admins), lfg: Number(lfg),
-          products: Number(products), orders: Number(orders),
-          revenue: Number(revenue), stock: Number(stock),
+    res.json({
+      success: true,
+      account: {
+        puuid,
+        name: accountData.gameName,
+        tag: accountData.tagLine,
+        account_level: null,
+      },
+      mmr: currentTier !== null ? {
+        current_data: {
+          currenttier: currentTier,
+          currenttierpatched: currentTierName,
+          ranking_in_tier: 0,
+          mmr_change_to_last_game: 0,
+          elo: 0,
+          old: false,
         },
-        recentUsers,
-        recentOrders: recentOrders.map(o => ({ ...o, total_ttc: Number(o.total_ttc) })),
-        signups: signups.reverse(),
-      });
-      return;
-    }
-
-    // GET /admin/users — list all users
-    if (req.method === 'GET' && url.pathname === '/admin/users') {
-      if (!(await requireAdmin(req, res))) return;
-      const [rows] = await pool.query(`SELECT ${USER_COLS} FROM users ORDER BY id DESC`);
-      sendJson(res, 200, { success: true, users: rows.map(sanitizeUser) });
-      return;
-    }
-
-    // PUT /admin/users/:id — edit a user
-    const adminUserPut = url.pathname.match(/^\/admin\/users\/(\d+)$/);
-    if (req.method === 'PUT' && adminUserPut) {
-      const admin = await requireAdmin(req, res);
-      if (!admin) return;
-      const targetId = Number(adminUserPut[1]);
-      const body = await readJsonBody(req);
-
-      const target = await getUserById(targetId);
-      if (!target) { sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' }); return; }
-
-      const updates = {};
-      if (body.username !== undefined) updates.username = String(body.username).trim() || target.username;
-      if (body.email    !== undefined) updates.email    = String(body.email).trim().toLowerCase() || target.email;
-      if (body.isAdmin  !== undefined) {
-        // Prevent removing the last admin
-        if (!body.isAdmin && target.is_admin) {
-          const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
-          if (admins <= 1) { sendJson(res, 400, { success: false, error: 'Impossible de retirer le dernier administrateur' }); return; }
-        }
-        updates.is_admin = body.isAdmin ? 1 : 0;
-      }
-      if (body.banned !== undefined) {
-        // Banning an admin is not allowed — demote first.
-        if (body.banned && target.is_admin) { sendJson(res, 400, { success: false, error: 'Impossible de bannir un administrateur' }); return; }
-        updates.banned = body.banned ? 1 : 0;
-      }
-      if (body.showInLfg !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
-      if (Object.keys(updates).length > 0) {
-        const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-        await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), targetId]);
-      }
-      const updated = await getUserById(targetId);
-      sendJson(res, 200, { success: true, user: sanitizeUser(updated) });
-      return;
-    }
-
-    // DELETE /admin/users/:id
-    const adminUserDel = url.pathname.match(/^\/admin\/users\/(\d+)$/);
-    if (req.method === 'DELETE' && adminUserDel) {
-      const admin = await requireAdmin(req, res);
-      if (!admin) return;
-      const targetId = Number(adminUserDel[1]);
-      if (targetId === admin.id) { sendJson(res, 400, { success: false, error: 'Vous ne pouvez pas supprimer votre propre compte' }); return; }
-
-      const target = await getUserById(targetId);
-      if (!target) { sendJson(res, 404, { success: false, error: 'Utilisateur introuvable' }); return; }
-      if (target.is_admin) {
-        const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
-        if (admins <= 1) { sendJson(res, 400, { success: false, error: 'Impossible de supprimer le dernier administrateur' }); return; }
-      }
-      try {
-        await pool.execute('DELETE FROM users WHERE id = ?', [targetId]);
-      } catch {
-        sendJson(res, 409, { success: false, error: 'Suppression impossible : cet utilisateur a des donnees liees (commandes).' });
-        return;
-      }
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    // GET /admin/products
-    if (req.method === 'GET' && url.pathname === '/admin/products') {
-      if (!(await requireAdmin(req, res))) return;
-      const [rows] = await pool.query('SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id DESC');
-      sendJson(res, 200, { success: true, products: rows.map(r => ({ ...r, price: Number(r.price), stock_quantity: Number(r.stock_quantity) })) });
-      return;
-    }
-
-    // POST /admin/products
-    if (req.method === 'POST' && url.pathname === '/admin/products') {
-      if (!(await requireAdmin(req, res))) return;
-      const body = await readJsonBody(req);
-      const name = String(body.name || '').trim();
-      if (!name) { sendJson(res, 400, { success: false, error: 'Le nom est requis' }); return; }
-      const [result] = await pool.execute(
-        'INSERT INTO products (name, price, category, image_url, stock_quantity) VALUES (?, ?, ?, ?, ?)',
-        [name, Number(body.price) || 0, String(body.category || 'ACCESSOIRES'), String(body.image_url || ''), Number(body.stock_quantity) || 0]
-      );
-      sendJson(res, 201, { success: true, id: result.insertId });
-      return;
-    }
-
-    // PUT /admin/products/:id
-    const adminProdPut = url.pathname.match(/^\/admin\/products\/(\d+)$/);
-    if (req.method === 'PUT' && adminProdPut) {
-      if (!(await requireAdmin(req, res))) return;
-      const id = Number(adminProdPut[1]);
-      const body = await readJsonBody(req);
-      const [[existing]] = await pool.query('SELECT * FROM products WHERE id = ?', [id]);
-      if (!existing) { sendJson(res, 404, { success: false, error: 'Produit introuvable' }); return; }
-      await pool.execute(
-        'UPDATE products SET name = ?, price = ?, category = ?, image_url = ?, stock_quantity = ? WHERE id = ?',
-        [
-          body.name !== undefined ? String(body.name).trim() : existing.name,
-          body.price !== undefined ? Number(body.price) : existing.price,
-          body.category !== undefined ? String(body.category) : existing.category,
-          body.image_url !== undefined ? String(body.image_url) : existing.image_url,
-          body.stock_quantity !== undefined ? Number(body.stock_quantity) : existing.stock_quantity,
-          id,
-        ]
-      );
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    // DELETE /admin/products/:id
-    const adminProdDel = url.pathname.match(/^\/admin\/products\/(\d+)$/);
-    if (req.method === 'DELETE' && adminProdDel) {
-      if (!(await requireAdmin(req, res))) return;
-      const id = Number(adminProdDel[1]);
-      try {
-        await pool.execute('DELETE FROM products WHERE id = ?', [id]);
-      } catch {
-        sendJson(res, 409, { success: false, error: 'Suppression impossible : ce produit figure dans des commandes.' });
-        return;
-      }
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    // ════════════════════════════════════════════════════════
-    //  DISCORD SERVERS — public list + admin management
-    // ════════════════════════════════════════════════════════
-
-    // GET /discord-servers — public list for the Discord page
-    if (req.method === 'GET' && url.pathname === '/discord-servers') {
-      const [rows] = await pool.query('SELECT id, name, description, invite_url, members, tag, featured FROM discord_servers ORDER BY featured DESC, id ASC');
-      sendJson(res, 200, { success: true, servers: rows.map(r => ({ ...r, featured: r.featured ? 1 : 0 })) });
-      return;
-    }
-
-    // POST /admin/discord-servers — add a server
-    if (req.method === 'POST' && url.pathname === '/admin/discord-servers') {
-      if (!(await requireAdmin(req, res))) return;
-      const body = await readJsonBody(req);
-      const name = String(body.name || '').trim();
-      const invite = String(body.inviteUrl || body.invite_url || '').trim();
-      if (!name || !invite) { sendJson(res, 400, { success: false, error: 'Le nom et le lien d’invitation sont requis' }); return; }
-      const [result] = await pool.execute(
-        'INSERT INTO discord_servers (name, description, invite_url, members, tag, featured) VALUES (?, ?, ?, ?, ?, ?)',
-        [name, String(body.description || '').trim() || null, invite, String(body.members || '').trim() || null, String(body.tag || '').trim() || null, body.featured ? 1 : 0]
-      );
-      sendJson(res, 201, { success: true, id: result.insertId });
-      return;
-    }
-
-    // DELETE /admin/discord-servers/:id
-    const adminDiscordDel = url.pathname.match(/^\/admin\/discord-servers\/(\d+)$/);
-    if (req.method === 'DELETE' && adminDiscordDel) {
-      if (!(await requireAdmin(req, res))) return;
-      await pool.execute('DELETE FROM discord_servers WHERE id = ?', [Number(adminDiscordDel[1])]);
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    // GET /admin/orders — all orders with buyer + line items
-    if (req.method === 'GET' && url.pathname === '/admin/orders') {
-      if (!(await requireAdmin(req, res))) return;
-      const [orders] = await pool.query(`
-        SELECT o.id, o.user_id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username, u.email
-        FROM orders o LEFT JOIN users u ON u.id = o.user_id
-        ORDER BY o.id DESC
-      `);
-      const [items] = await pool.query(`
-        SELECT oi.order_id, oi.quantity, oi.price_at_purchase, p.name
-        FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
-      `);
-      const byOrder = {};
-      for (const it of items) {
-        (byOrder[it.order_id] ||= []).push({ name: it.name || 'Produit supprimé', quantity: it.quantity, price: Number(it.price_at_purchase) });
-      }
-      sendJson(res, 200, {
-        success: true,
-        orders: orders.map(o => ({ ...o, total_ttc: Number(o.total_ttc), items: byOrder[o.id] || [] })),
-      });
-      return;
-    }
-
-    // PUT /admin/orders/:id — change status
-    const adminOrderPut = url.pathname.match(/^\/admin\/orders\/(\d+)$/);
-    if (req.method === 'PUT' && adminOrderPut) {
-      if (!(await requireAdmin(req, res))) return;
-      const id = Number(adminOrderPut[1]);
-      const body = await readJsonBody(req);
-      const status = ['Pending', 'Paid', 'Shipped', 'Cancelled'].includes(body.status) ? body.status : null;
-      if (!status) { sendJson(res, 400, { success: false, error: 'Statut invalide' }); return; }
-      await pool.execute('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
-      sendJson(res, 200, { success: true });
-      return;
-    }
-
-    sendJson(res, 404, { success: false, error: 'Route introuvable' });
-  } catch (error) {
-    console.error('API error:', error);
-    sendJson(res, 500, { success: false, error: 'Erreur serveur' });
+      } : null,
+      puuid,
+      region,
+    });
+  } catch (err) {
+    console.error('Riot player error:', err);
+    res.status(502).json({ success: false, error: 'Erreur lors de la connexion aux serveurs Riot' });
   }
 });
 
+app.get('/riot/matches/:name/:tag', async (req, res) => {
+  const size = Math.min(Number(req.query.size || '5'), 8);
+  const matches = await riotFetchMatches(req.params.name, req.params.tag, size);
+  res.json({ success: true, matches });
+});
+
+// ════════════════════════════════════════════════════════
+//  ESPORTS — vlr.gg proxy (real Valorant data, no token needed)
+// ════════════════════════════════════════════════════════
+app.get('/esports/tournaments/running', async (req, res) => {
+  try {
+    const data = await fetchVlr('/events?status=ongoing');
+    res.json({ success: true, configured: true, data });
+  } catch (err) {
+    console.error('vlr.gg proxy error:', err);
+    res.json({ success: true, configured: true, data: [] });
+  }
+});
+
+app.get('/esports/tournaments/upcoming', async (req, res) => {
+  try {
+    const data = await fetchVlr('/events?status=upcoming');
+    res.json({ success: true, configured: true, data });
+  } catch (err) {
+    console.error('vlr.gg proxy error:', err);
+    res.json({ success: true, configured: true, data: [] });
+  }
+});
+
+app.get('/esports/matches/running', async (req, res) => {
+  try {
+    // vlr returns upcoming + live in one feed; the client keeps the live ones.
+    const data = await fetchVlr('/matches');
+    res.json({ success: true, configured: true, data });
+  } catch (err) {
+    console.error('vlr.gg proxy error:', err);
+    res.json({ success: true, configured: true, data: [] });
+  }
+});
+
+app.get('/esports/matches/results', async (req, res) => {
+  try {
+    const data = await fetchVlr('/results');
+    res.json({ success: true, configured: true, data });
+  } catch (err) {
+    console.error('vlr.gg proxy error:', err);
+    res.json({ success: true, configured: true, data: [] });
+  }
+});
+
+// vlr.gg has no per-event bracket feed via this wrapper — return empty.
+app.get('/esports/tournaments/:id/brackets', (req, res) => {
+  res.json({ success: true, configured: true, data: [] });
+});
+
+// Any other /esports/* path is unknown.
+app.get('/esports/*splat', (req, res) => {
+  res.status(404).json({ success: false, error: 'Route esports introuvable' });
+});
+
+// ════════════════════════════════════════════════════════
+//  COMMUNITY (LFG)
+// ════════════════════════════════════════════════════════
+app.get('/users/lfg', async (req, res) => {
+  const [rows] = await pool.execute(
+    `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status, avatar_url FROM users WHERE show_in_lfg = 1`
+  );
+  const players = rows.map(r => ({
+    id: r.id,
+    username: r.username,
+    riotId: r.riot_id || null,
+    tagLine: r.tag_line || null,
+    bio: r.bio || null,
+    discord: r.discord || null,
+    twitter: r.twitter || null,
+    twitch: r.twitch || null,
+    youtube: r.youtube || null,
+    avatarUrl: r.avatar_url || null,
+    rankLabel: r.rank_label || null,
+    roles: parseJsonCol(r.roles),
+    region: r.region || null,
+    languages: parseJsonCol(r.languages),
+    playtimes: parseJsonCol(r.playtimes),
+    lfgStatus: r.lfg_status || 'lfg',
+  }));
+  res.json({ success: true, players });
+});
+
+// ════════════════════════════════════════════════════════
+//  SHOP — public
+// ════════════════════════════════════════════════════════
+app.get('/products', async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id ASC'
+  );
+  const products = rows.map(r => ({
+    id: Number(r.id),
+    name: r.name,
+    price: Number(r.price),
+    category: r.category,
+    image_url: r.image_url,
+    stock_quantity: Number(r.stock_quantity),
+  }));
+  res.json({ success: true, products });
+});
+
+app.post('/orders', requireAuth, async (req, res) => {
+  const sessionUserId = req.userId;
+  const body = req.body || {};
+  const totalTtc = Number(body.total_ttc || 0);
+  const method = ['Card', 'PayPal', 'Crypto'].includes(body.payment_method) ? body.payment_method : 'Card';
+  const items = Array.isArray(body.items) ? body.items : [];
+
+  const [orderResult] = await pool.execute(
+    'INSERT INTO orders (user_id, total_ttc, payment_method, status) VALUES (?, ?, ?, ?)',
+    [sessionUserId, totalTtc, method, 'Paid']
+  );
+  const orderId = orderResult.insertId;
+
+  for (const it of items) {
+    const pid = Number(it.product_id);
+    const qty = Number(it.quantity) || 1;
+    const price = Number(it.price_at_purchase) || 0;
+    if (!pid) continue;
+    await pool.execute(
+      'INSERT INTO order_items (order_id, product_id, quantity, price_at_purchase) VALUES (?, ?, ?, ?)',
+      [orderId, pid, qty, price]
+    );
+    await pool.execute(
+      'UPDATE products SET stock_quantity = GREATEST(stock_quantity - ?, 0) WHERE id = ?',
+      [qty, pid]
+    );
+  }
+
+  res.status(201).json({ success: true, orderId });
+});
+
+// ════════════════════════════════════════════════════════
+//  ADMIN — protected (is_admin required)
+// ════════════════════════════════════════════════════════
+app.get('/admin/overview', requireAdmin, async (req, res) => {
+  const [[{ users }]]    = await pool.query('SELECT COUNT(*) AS users FROM users');
+  const [[{ admins }]]   = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+  const [[{ lfg }]]      = await pool.query('SELECT COUNT(*) AS lfg FROM users WHERE show_in_lfg = 1');
+  const [[{ products }]] = await pool.query('SELECT COUNT(*) AS products FROM products');
+  const [[{ orders }]]   = await pool.query('SELECT COUNT(*) AS orders FROM orders');
+  const [[{ revenue }]]  = await pool.query("SELECT COALESCE(SUM(total_ttc),0) AS revenue FROM orders WHERE status != 'Cancelled'");
+  const [[{ stock }]]    = await pool.query('SELECT COALESCE(SUM(stock_quantity),0) AS stock FROM products');
+
+  const [recentUsers] = await pool.query(
+    'SELECT id, username, email, created_at, is_admin FROM users ORDER BY id DESC LIMIT 5'
+  );
+  const [recentOrders] = await pool.query(`
+    SELECT o.id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username
+    FROM orders o LEFT JOIN users u ON u.id = o.user_id
+    ORDER BY o.id DESC LIMIT 6
+  `);
+  const [signups] = await pool.query(`
+    SELECT DATE(created_at) AS day, COUNT(*) AS count
+    FROM users GROUP BY DATE(created_at) ORDER BY day DESC LIMIT 7
+  `);
+
+  res.json({
+    success: true,
+    metrics: {
+      users: Number(users), admins: Number(admins), lfg: Number(lfg),
+      products: Number(products), orders: Number(orders),
+      revenue: Number(revenue), stock: Number(stock),
+    },
+    recentUsers,
+    recentOrders: recentOrders.map(o => ({ ...o, total_ttc: Number(o.total_ttc) })),
+    signups: signups.reverse(),
+  });
+});
+
+app.get('/admin/users', requireAdmin, async (req, res) => {
+  const [rows] = await pool.query(`SELECT ${USER_COLS} FROM users ORDER BY id DESC`);
+  res.json({ success: true, users: rows.map(sanitizeUser) });
+});
+
+app.put('/admin/users/:id', requireAdmin, async (req, res) => {
+  const targetId = Number(req.params.id);
+  const body = req.body || {};
+
+  const target = await getUserById(targetId);
+  if (!target) { return res.status(404).json({ success: false, error: 'Utilisateur introuvable' }); }
+
+  const updates = {};
+  if (body.username !== undefined) updates.username = String(body.username).trim() || target.username;
+  if (body.email    !== undefined) updates.email    = String(body.email).trim().toLowerCase() || target.email;
+  if (body.isAdmin  !== undefined) {
+    // Prevent removing the last admin
+    if (!body.isAdmin && target.is_admin) {
+      const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+      if (admins <= 1) { return res.status(400).json({ success: false, error: 'Impossible de retirer le dernier administrateur' }); }
+    }
+    updates.is_admin = body.isAdmin ? 1 : 0;
+  }
+  if (body.banned !== undefined) {
+    // Banning an admin is not allowed — demote first.
+    if (body.banned && target.is_admin) { return res.status(400).json({ success: false, error: 'Impossible de bannir un administrateur' }); }
+    updates.banned = body.banned ? 1 : 0;
+  }
+  if (body.showInLfg !== undefined) updates.show_in_lfg = body.showInLfg ? 1 : 0;
+  if (Object.keys(updates).length > 0) {
+    const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
+    await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), targetId]);
+  }
+  const updated = await getUserById(targetId);
+  res.json({ success: true, user: sanitizeUser(updated) });
+});
+
+app.delete('/admin/users/:id', requireAdmin, async (req, res) => {
+  const admin = req.user;
+  const targetId = Number(req.params.id);
+  if (targetId === admin.id) { return res.status(400).json({ success: false, error: 'Vous ne pouvez pas supprimer votre propre compte' }); }
+
+  const target = await getUserById(targetId);
+  if (!target) { return res.status(404).json({ success: false, error: 'Utilisateur introuvable' }); }
+  if (target.is_admin) {
+    const [[{ admins }]] = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
+    if (admins <= 1) { return res.status(400).json({ success: false, error: 'Impossible de supprimer le dernier administrateur' }); }
+  }
+  try {
+    await pool.execute('DELETE FROM users WHERE id = ?', [targetId]);
+  } catch {
+    return res.status(409).json({ success: false, error: 'Suppression impossible : cet utilisateur a des donnees liees (commandes).' });
+  }
+  res.json({ success: true });
+});
+
+app.get('/admin/products', requireAdmin, async (req, res) => {
+  const [rows] = await pool.query('SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id DESC');
+  res.json({ success: true, products: rows.map(r => ({ ...r, price: Number(r.price), stock_quantity: Number(r.stock_quantity) })) });
+});
+
+app.post('/admin/products', requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || '').trim();
+  if (!name) { return res.status(400).json({ success: false, error: 'Le nom est requis' }); }
+  const [result] = await pool.execute(
+    'INSERT INTO products (name, price, category, image_url, stock_quantity) VALUES (?, ?, ?, ?, ?)',
+    [name, Number(body.price) || 0, String(body.category || 'ACCESSOIRES'), String(body.image_url || ''), Number(body.stock_quantity) || 0]
+  );
+  res.status(201).json({ success: true, id: result.insertId });
+});
+
+app.put('/admin/products/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const [[existing]] = await pool.query('SELECT * FROM products WHERE id = ?', [id]);
+  if (!existing) { return res.status(404).json({ success: false, error: 'Produit introuvable' }); }
+  await pool.execute(
+    'UPDATE products SET name = ?, price = ?, category = ?, image_url = ?, stock_quantity = ? WHERE id = ?',
+    [
+      body.name !== undefined ? String(body.name).trim() : existing.name,
+      body.price !== undefined ? Number(body.price) : existing.price,
+      body.category !== undefined ? String(body.category) : existing.category,
+      body.image_url !== undefined ? String(body.image_url) : existing.image_url,
+      body.stock_quantity !== undefined ? Number(body.stock_quantity) : existing.stock_quantity,
+      id,
+    ]
+  );
+  res.json({ success: true });
+});
+
+app.delete('/admin/products/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    await pool.execute('DELETE FROM products WHERE id = ?', [id]);
+  } catch {
+    return res.status(409).json({ success: false, error: 'Suppression impossible : ce produit figure dans des commandes.' });
+  }
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════
+//  DISCORD SERVERS — public list + admin management
+// ════════════════════════════════════════════════════════
+app.get('/discord-servers', async (req, res) => {
+  const [rows] = await pool.query('SELECT id, name, description, invite_url, members, tag, featured FROM discord_servers ORDER BY featured DESC, id ASC');
+  res.json({ success: true, servers: rows.map(r => ({ ...r, featured: r.featured ? 1 : 0 })) });
+});
+
+app.post('/admin/discord-servers', requireAdmin, async (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || '').trim();
+  const invite = String(body.inviteUrl || body.invite_url || '').trim();
+  if (!name || !invite) { return res.status(400).json({ success: false, error: 'Le nom et le lien d’invitation sont requis' }); }
+  const [result] = await pool.execute(
+    'INSERT INTO discord_servers (name, description, invite_url, members, tag, featured) VALUES (?, ?, ?, ?, ?, ?)',
+    [name, String(body.description || '').trim() || null, invite, String(body.members || '').trim() || null, String(body.tag || '').trim() || null, body.featured ? 1 : 0]
+  );
+  res.status(201).json({ success: true, id: result.insertId });
+});
+
+app.delete('/admin/discord-servers/:id', requireAdmin, async (req, res) => {
+  await pool.execute('DELETE FROM discord_servers WHERE id = ?', [Number(req.params.id)]);
+  res.json({ success: true });
+});
+
+app.get('/admin/orders', requireAdmin, async (req, res) => {
+  const [orders] = await pool.query(`
+    SELECT o.id, o.user_id, o.total_ttc, o.payment_method, o.status, o.created_at, u.username, u.email
+    FROM orders o LEFT JOIN users u ON u.id = o.user_id
+    ORDER BY o.id DESC
+  `);
+  const [items] = await pool.query(`
+    SELECT oi.order_id, oi.quantity, oi.price_at_purchase, p.name
+    FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+  `);
+  const byOrder = {};
+  for (const it of items) {
+    (byOrder[it.order_id] ||= []).push({ name: it.name || 'Produit supprimé', quantity: it.quantity, price: Number(it.price_at_purchase) });
+  }
+  res.json({
+    success: true,
+    orders: orders.map(o => ({ ...o, total_ttc: Number(o.total_ttc), items: byOrder[o.id] || [] })),
+  });
+});
+
+app.put('/admin/orders/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const body = req.body || {};
+  const status = ['Pending', 'Paid', 'Shipped', 'Cancelled'].includes(body.status) ? body.status : null;
+  if (!status) { return res.status(400).json({ success: false, error: 'Statut invalide' }); }
+  await pool.execute('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════
+//  TEAMS
+// ════════════════════════════════════════════════════════
+const teamWithMembers = async (teamId) => {
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return null;
+  const [members] = await pool.query(
+    `SELECT tm.user_id, tm.role, u.username, u.avatar_url, u.rank_label
+     FROM team_members tm JOIN users u ON u.id = tm.user_id
+     WHERE tm.team_id = ? ORDER BY (tm.role = 'owner') DESC, tm.joined_at ASC`,
+    [teamId]
+  );
+  return {
+    id: team.id,
+    name: team.name,
+    tag: team.tag || null,
+    ownerId: team.owner_id,
+    logoUrl: team.logo_url || null,
+    description: team.description || null,
+    createdAt: team.created_at,
+    members: members.map(m => ({
+      userId: m.user_id, username: m.username, role: m.role,
+      avatarUrl: m.avatar_url || null, rankLabel: m.rank_label || null,
+    })),
+  };
+};
+
+// Create a team — creator becomes the owner and first member.
+app.post('/teams', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || '').trim();
+  if (!name) return res.status(400).json({ success: false, error: 'Le nom de l’équipe est requis' });
+  const tag = String(body.tag || '').trim().slice(0, 10) || null;
+  const logoUrl = String(body.logoUrl || '').trim() || null;
+  const description = String(body.description || '').trim() || null;
+
+  const [result] = await pool.execute(
+    'INSERT INTO teams (name, tag, owner_id, logo_url, description) VALUES (?, ?, ?, ?, ?)',
+    [name, tag, req.userId, logoUrl, description]
+  );
+  await pool.execute(
+    'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)',
+    [result.insertId, req.userId, 'owner']
+  );
+  res.status(201).json({ success: true, team: await teamWithMembers(result.insertId) });
+});
+
+// Teams the caller owns or belongs to.
+app.get('/teams/mine', requireAuth, async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT DISTINCT team_id FROM team_members WHERE user_id = ?',
+    [req.userId]
+  );
+  const teams = [];
+  for (const r of rows) teams.push(await teamWithMembers(r.team_id));
+  res.json({ success: true, teams: teams.filter(Boolean) });
+});
+
+// Public list of all teams (with member count).
+app.get('/teams', async (req, res) => {
+  const [rows] = await pool.query(`
+    SELECT t.id, t.name, t.tag, t.owner_id, t.logo_url, t.created_at,
+           (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS member_count
+    FROM teams t ORDER BY t.id DESC
+  `);
+  res.json({
+    success: true,
+    teams: rows.map(t => ({
+      id: t.id, name: t.name, tag: t.tag || null, ownerId: t.owner_id,
+      logoUrl: t.logo_url || null, memberCount: Number(t.member_count),
+    })),
+  });
+});
+
+app.get('/teams/:id', async (req, res) => {
+  const team = await teamWithMembers(Number(req.params.id));
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  res.json({ success: true, team });
+});
+
+// Owner adds a member by username.
+app.post('/teams/:id/members', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut ajouter des membres' });
+
+  const username = String((req.body || {}).username || '').trim();
+  if (!username) return res.status(400).json({ success: false, error: 'Pseudo requis' });
+  const [[u]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
+  if (!u) return res.status(404).json({ success: false, error: 'Aucun joueur avec ce pseudo' });
+
+  try {
+    await pool.execute('INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)', [teamId, u.id, 'member']);
+  } catch {
+    return res.status(409).json({ success: false, error: 'Ce joueur est déjà dans l’équipe' });
+  }
+  res.status(201).json({ success: true, team: await teamWithMembers(teamId) });
+});
+
+// Remove a member (owner removes anyone but self; a member can remove themselves).
+app.delete('/teams/:id/members/:userId', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+
+  const isOwner = team.owner_id === req.userId;
+  if (!isOwner && targetUserId !== req.userId) {
+    return res.status(403).json({ success: false, error: 'Action non autorisée' });
+  }
+  if (targetUserId === team.owner_id) {
+    return res.status(400).json({ success: false, error: 'Le capitaine ne peut pas quitter son équipe (supprimez-la plutôt)' });
+  }
+  await pool.execute('DELETE FROM team_members WHERE team_id = ? AND user_id = ?', [teamId, targetUserId]);
+  res.json({ success: true, team: await teamWithMembers(teamId) });
+});
+
+// Delete a team (owner only). Also clears its tournament registrations.
+app.delete('/teams/:id', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut supprimer l’équipe' });
+
+  await pool.execute('DELETE FROM team_members WHERE team_id = ?', [teamId]);
+  await pool.execute('DELETE FROM tournament_registrations WHERE team_id = ?', [teamId]);
+  await pool.execute('DELETE FROM teams WHERE id = ?', [teamId]);
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════════
+//  TOURNAMENTS (own) + single-elimination brackets
+// ════════════════════════════════════════════════════════
+const nextPow2 = (n) => { let p = 1; while (p < n) p *= 2; return Math.max(p, 2); };
+
+// Advance a match winner into the appropriate slot of the next round.
+// When the final is decided, the tournament is marked completed.
+const advanceWinner = async (tournamentId, match, winnerId) => {
+  await pool.execute(
+    'UPDATE tournament_matches SET winner_id = ?, status = ? WHERE id = ?',
+    [winnerId, 'done', match.id]
+  );
+  const [[{ maxRound }]] = await pool.query(
+    'SELECT MAX(round) AS maxRound FROM tournament_matches WHERE tournament_id = ?',
+    [tournamentId]
+  );
+  if (match.round >= maxRound) {
+    await pool.execute("UPDATE tournaments SET status = 'completed' WHERE id = ?", [tournamentId]);
+    return;
+  }
+  const nextSlot = Math.floor(match.slot / 2);
+  const col = match.slot % 2 === 0 ? 'team1_id' : 'team2_id';
+  const [[next]] = await pool.query(
+    'SELECT id FROM tournament_matches WHERE tournament_id = ? AND round = ? AND slot = ?',
+    [tournamentId, match.round + 1, nextSlot]
+  );
+  if (next) await pool.execute(`UPDATE tournament_matches SET ${col} = ? WHERE id = ?`, [winnerId, next.id]);
+};
+
+// Build a full single-elimination bracket from a list of team ids.
+const generateBracket = async (tournamentId, teamIds) => {
+  const size = nextPow2(teamIds.length);
+  const rounds = Math.round(Math.log2(size));
+  const slots = Array.from({ length: size }, (_, i) => teamIds[i] ?? null);
+
+  const round1 = [];
+  for (let r = 1; r <= rounds; r++) {
+    const count = size / Math.pow(2, r);
+    for (let slot = 0; slot < count; slot++) {
+      const t1 = r === 1 ? (slots[slot * 2] ?? null) : null;
+      const t2 = r === 1 ? (slots[slot * 2 + 1] ?? null) : null;
+      const [ins] = await pool.execute(
+        'INSERT INTO tournament_matches (tournament_id, round, slot, team1_id, team2_id, status) VALUES (?, ?, ?, ?, ?, ?)',
+        [tournamentId, r, slot, t1, t2, 'upcoming']
+      );
+      if (r === 1) round1.push({ id: ins.insertId, round: 1, slot, team1_id: t1, team2_id: t2 });
+    }
+  }
+  // Auto-advance first-round byes (a match with only one team present).
+  for (const m of round1) {
+    if (m.team1_id && !m.team2_id) await advanceWinner(tournamentId, m, m.team1_id);
+    else if (!m.team1_id && m.team2_id) await advanceWinner(tournamentId, m, m.team2_id);
+  }
+};
+
+const tournamentDetail = async (tournamentId) => {
+  const [[t]] = await pool.query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!t) return null;
+  const [regs] = await pool.query(
+    `SELECT r.team_id, r.checked_in, tm.name, tm.tag, tm.logo_url
+     FROM tournament_registrations r JOIN teams tm ON tm.id = r.team_id
+     WHERE r.tournament_id = ? ORDER BY r.registered_at ASC`,
+    [tournamentId]
+  );
+  const [matches] = await pool.query(
+    'SELECT * FROM tournament_matches WHERE tournament_id = ? ORDER BY round ASC, slot ASC',
+    [tournamentId]
+  );
+  return {
+    id: t.id, name: t.name, format: t.format, maxTeams: t.max_teams,
+    region: t.region || null, prizePool: t.prize_pool || null,
+    startsAt: t.starts_at, status: t.status, createdBy: t.created_by, createdAt: t.created_at,
+    teams: regs.map(r => ({ teamId: r.team_id, name: r.name, tag: r.tag || null, logoUrl: r.logo_url || null, checkedIn: r.checked_in ? 1 : 0 })),
+    matches: matches.map(m => ({
+      id: m.id, round: m.round, slot: m.slot,
+      team1Id: m.team1_id, team2Id: m.team2_id,
+      score1: m.score1, score2: m.score2, winnerId: m.winner_id, status: m.status,
+    })),
+  };
+};
+
+app.post('/tournaments', requireAuth, async (req, res) => {
+  const body = req.body || {};
+  const name = String(body.name || '').trim();
+  if (!name) return res.status(400).json({ success: false, error: 'Le nom du tournoi est requis' });
+  const maxTeams = nextPow2(Math.max(2, Math.min(Number(body.maxTeams) || 8, 64)));
+  const region = String(body.region || '').trim() || null;
+  const prizePool = String(body.prizePool || '').trim() || null;
+  const startsAt = body.startsAt ? new Date(body.startsAt) : null;
+  const startsAtSql = startsAt && !Number.isNaN(startsAt.getTime())
+    ? startsAt.toISOString().slice(0, 19).replace('T', ' ') : null;
+
+  const [result] = await pool.execute(
+    'INSERT INTO tournaments (name, format, max_teams, region, prize_pool, starts_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [name, 'SE', maxTeams, region, prizePool, startsAtSql, req.userId]
+  );
+  res.status(201).json({ success: true, tournament: await tournamentDetail(result.insertId) });
+});
+
+// List own (DB-backed) tournaments — not the vlr.gg feed.
+app.get('/tournaments', async (req, res) => {
+  const [rows] = await pool.query(`
+    SELECT t.*,
+           (SELECT COUNT(*) FROM tournament_registrations r WHERE r.tournament_id = t.id) AS team_count
+    FROM tournaments t ORDER BY t.id DESC
+  `);
+  res.json({
+    success: true,
+    tournaments: rows.map(t => ({
+      id: t.id, name: t.name, format: t.format, maxTeams: t.max_teams,
+      region: t.region || null, prizePool: t.prize_pool || null,
+      startsAt: t.starts_at, status: t.status, createdBy: t.created_by,
+      teamCount: Number(t.team_count),
+    })),
+  });
+});
+
+app.get('/tournaments/:id', async (req, res) => {
+  const detail = await tournamentDetail(Number(req.params.id));
+  if (!detail) return res.status(404).json({ success: false, error: 'Tournoi introuvable' });
+  res.json({ success: true, tournament: detail });
+});
+
+// Register one of the caller's teams into an open tournament.
+app.post('/tournaments/:id/register', requireAuth, async (req, res) => {
+  const tournamentId = Number(req.params.id);
+  const teamId = Number((req.body || {}).teamId);
+  const [[t]] = await pool.query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!t) return res.status(404).json({ success: false, error: 'Tournoi introuvable' });
+  if (t.status !== 'open') return res.status(400).json({ success: false, error: 'Les inscriptions sont fermées' });
+
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut inscrire l’équipe' });
+
+  const [[{ cnt }]] = await pool.query('SELECT COUNT(*) AS cnt FROM tournament_registrations WHERE tournament_id = ?', [tournamentId]);
+  if (cnt >= t.max_teams) return res.status(400).json({ success: false, error: 'Le tournoi est complet' });
+
+  try {
+    await pool.execute('INSERT INTO tournament_registrations (tournament_id, team_id) VALUES (?, ?)', [tournamentId, teamId]);
+  } catch {
+    return res.status(409).json({ success: false, error: 'Cette équipe est déjà inscrite' });
+  }
+  res.status(201).json({ success: true, tournament: await tournamentDetail(tournamentId) });
+});
+
+// Withdraw a team while registration is still open.
+app.delete('/tournaments/:id/register/:teamId', requireAuth, async (req, res) => {
+  const tournamentId = Number(req.params.id);
+  const teamId = Number(req.params.teamId);
+  const [[t]] = await pool.query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!t) return res.status(404).json({ success: false, error: 'Tournoi introuvable' });
+  if (t.status !== 'open') return res.status(400).json({ success: false, error: 'Le tournoi a déjà commencé' });
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (team && team.owner_id !== req.userId && t.created_by !== req.userId) {
+    return res.status(403).json({ success: false, error: 'Action non autorisée' });
+  }
+  await pool.execute('DELETE FROM tournament_registrations WHERE tournament_id = ? AND team_id = ?', [tournamentId, teamId]);
+  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+});
+
+// Lock registration and generate the bracket (organizer only).
+app.post('/tournaments/:id/start', requireAuth, async (req, res) => {
+  const tournamentId = Number(req.params.id);
+  const [[t]] = await pool.query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!t) return res.status(404).json({ success: false, error: 'Tournoi introuvable' });
+  if (t.created_by !== req.userId) return res.status(403).json({ success: false, error: 'Seul l’organisateur peut lancer le tournoi' });
+  if (t.status !== 'open') return res.status(400).json({ success: false, error: 'Le tournoi a déjà été lancé' });
+
+  const [regs] = await pool.query('SELECT team_id FROM tournament_registrations WHERE tournament_id = ? ORDER BY registered_at ASC', [tournamentId]);
+  if (regs.length < 2) return res.status(400).json({ success: false, error: 'Il faut au moins 2 équipes inscrites' });
+
+  await generateBracket(tournamentId, regs.map(r => r.team_id));
+  await pool.execute("UPDATE tournaments SET status = 'live' WHERE id = ?", [tournamentId]);
+  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+});
+
+// Report a match score (organizer only) — winner advances automatically.
+app.put('/tournaments/:id/matches/:matchId', requireAuth, async (req, res) => {
+  const tournamentId = Number(req.params.id);
+  const matchId = Number(req.params.matchId);
+  const [[t]] = await pool.query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!t) return res.status(404).json({ success: false, error: 'Tournoi introuvable' });
+  if (t.created_by !== req.userId) return res.status(403).json({ success: false, error: 'Seul l’organisateur peut saisir les scores' });
+
+  const [[m]] = await pool.query('SELECT * FROM tournament_matches WHERE id = ? AND tournament_id = ?', [matchId, tournamentId]);
+  if (!m) return res.status(404).json({ success: false, error: 'Match introuvable' });
+  if (m.status === 'done') return res.status(400).json({ success: false, error: 'Ce match est déjà terminé' });
+  if (!m.team1_id || !m.team2_id) return res.status(400).json({ success: false, error: 'Les deux équipes ne sont pas encore connues' });
+
+  const body = req.body || {};
+  const score1 = Number(body.score1);
+  const score2 = Number(body.score2);
+  if (!Number.isFinite(score1) || !Number.isFinite(score2) || score1 < 0 || score2 < 0) {
+    return res.status(400).json({ success: false, error: 'Scores invalides' });
+  }
+  if (score1 === score2) return res.status(400).json({ success: false, error: 'Un match ne peut pas se terminer sur une égalité' });
+
+  const winnerId = score1 > score2 ? m.team1_id : m.team2_id;
+  await pool.execute('UPDATE tournament_matches SET score1 = ?, score2 = ? WHERE id = ?', [score1, score2, matchId]);
+  await advanceWinner(tournamentId, m, winnerId);
+  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+});
+
+// ── Fallbacks ───────────────────────────────────────────────
+// Unknown route → 404 (same shape as before).
+app.use((req, res) => {
+  res.status(404).json({ success: false, error: 'Route introuvable' });
+});
+
+// Centralised error handler → 500 (replaces the per-route try/catch).
+app.use((err, req, res, next) => {
+  console.error('API error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ success: false, error: 'Erreur serveur' });
+});
+
 initDb().then(() => {
-  server.listen(API_PORT, () => {
+  app.listen(API_PORT, () => {
     console.log(`Local API running on http://localhost:${API_PORT}`);
   });
 }).catch(err => {

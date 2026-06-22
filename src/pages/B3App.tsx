@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User } from '../contexts/AuthContext';
-import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer } from '../services/platformApi';
+import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament } from '../services/platformApi';
 import type { StatsRecord, MatchWithUser, ProductRecord } from '../types/api';
 import { getLiveMatches, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
 
@@ -225,6 +225,8 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [products, setProducts] = useState<ShopItem[] | null>(null);
   const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
   const [statsData, setStatsData] = useState<{ stats: StatsRecord | null; matches: MatchWithUser[] } | null>(null);
+  const [matchesReal, setMatchesReal] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [lfgPlayers, setLfgPlayers] = useState<LfgPlayer[] | null>(null);
   const [tourneys, setTourneys] = useState<EsportsTournament[] | null>(null);
   const [liveMatches, setLiveMatches] = useState<LiveMatch[] | null>(null);
@@ -242,6 +244,17 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [viewPlayer, setViewPlayer] = useState<LfgPlayer | null>(null);
   const [viewTourney, setViewTourney] = useState<EsportsTournament | null>(null);
   const [tourneyMatches, setTourneyMatches] = useState<TournamentMatch[] | null>(null);
+
+  // B3 Arena — community teams + own tournaments + brackets.
+  const [arenaMode, setArenaMode] = useState<'live' | 'arena'>('live');
+  const [myTeams, setMyTeams] = useState<Team[] | null>(null);
+  const [ownTournaments, setOwnTournaments] = useState<OwnTournament[] | null>(null);
+  const [viewArena, setViewArena] = useState<OwnTournament | null>(null);
+  const [teamForm, setTeamForm] = useState({ name: '', tag: '' });
+  const [tourForm, setTourForm] = useState({ name: '', maxTeams: '8', region: '', prizePool: '' });
+  const [memberInputs, setMemberInputs] = useState<Record<number, string>>({});
+  const [scoreInputs, setScoreInputs] = useState<Record<number, { s1: string; s2: string }>>({});
+  const [arenaBusy, setArenaBusy] = useState(false);
 
   // Admin management: sub-tab + live lists.
   const [adminTab, setAdminTab] = useState<'overview' | 'users' | 'merch' | 'discord'>('overview');
@@ -362,13 +375,21 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     let alive = true;
     Promise.all([
       platformApi.getUserStats(Number(user.id)),
-      platformApi.getRecentMatches(8),
+      platformApi.getMatchHistory(Number(user.id)),
     ]).then(([s, m]) => {
       if (!alive) return;
-      setStatsData({
-        stats: (s.success && s.stats) ? s.stats : null,
-        matches: (m.success && m.matches) ? m.matches : [],
-      });
+      const stats = (s.success && s.stats) ? s.stats : null;
+      const persisted = (m.success && m.matches) ? m.matches : [];
+      if (persisted.length > 0) {
+        setMatchesReal(true);
+        setStatsData({ stats, matches: persisted });
+      } else {
+        // No synced matches yet → keep the demo feed so the page isn't empty.
+        setMatchesReal(false);
+        platformApi.getRecentMatches(8).then(d => {
+          if (alive) setStatsData({ stats, matches: (d.success && d.matches) ? d.matches : [] });
+        });
+      }
     }).catch(() => alive && setStatsData({ stats: null, matches: [] }));
     return () => { alive = false; };
   }, [user.id]);
@@ -403,6 +424,120 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     return () => { alive = false; window.clearInterval(id); };
   }, [screen]);
 
+  // B3 Arena data (my teams + community tournaments) — loaded on the Tournois tab.
+  const reloadArena = () =>
+    Promise.all([platformApi.getMyTeams(), platformApi.getOwnTournaments()]).then(([t, to]) => {
+      setMyTeams(t.success && t.teams ? t.teams : []);
+      setOwnTournaments(to.success && to.tournaments ? to.tournaments : []);
+    });
+  useEffect(() => {
+    if (screen !== 'tournaments') return;
+    reloadArena().catch(() => { setMyTeams([]); setOwnTournaments([]); });
+  }, [screen]);
+
+  // ── Arena action handlers ──────────────────────────────────
+  const createTeamH = async () => {
+    const name = teamForm.name.trim();
+    if (!name) { notify('Nom d’équipe requis'); return; }
+    setArenaBusy(true);
+    const r = await platformApi.createTeam({ name, tag: teamForm.tag.trim() || undefined });
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    setTeamForm({ name: '', tag: '' });
+    await reloadArena();
+    notify('Équipe créée');
+  };
+  const deleteTeamH = async (id: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.deleteTeam(id);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    await reloadArena();
+    notify('Équipe supprimée');
+  };
+  const addMemberH = async (teamId: number) => {
+    const username = (memberInputs[teamId] || '').trim();
+    if (!username) { notify('Pseudo requis'); return; }
+    setArenaBusy(true);
+    const r = await platformApi.addTeamMember(teamId, username);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    setMemberInputs(prev => ({ ...prev, [teamId]: '' }));
+    await reloadArena();
+    notify('Membre ajouté');
+  };
+  const removeMemberH = async (teamId: number, userId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.removeTeamMember(teamId, userId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    await reloadArena();
+  };
+  const createTournamentH = async () => {
+    const name = tourForm.name.trim();
+    if (!name) { notify('Nom du tournoi requis'); return; }
+    setArenaBusy(true);
+    const r = await platformApi.createTournament({
+      name,
+      maxTeams: Number(tourForm.maxTeams) || 8,
+      region: tourForm.region.trim() || undefined,
+      prizePool: tourForm.prizePool.trim() || undefined,
+    });
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    setTourForm({ name: '', maxTeams: '8', region: '', prizePool: '' });
+    await reloadArena();
+    notify('Tournoi créé');
+  };
+  // Actions on the open tournament detail — refresh both the detail and the list.
+  const refreshDetail = (t?: OwnTournament) => { if (t) setViewArena(t); reloadArena().catch(() => undefined); };
+  const registerH = async (tournamentId: number, teamId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.registerTeam(tournamentId, teamId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    refreshDetail(r.tournament);
+    notify('Équipe inscrite');
+  };
+  const unregisterH = async (tournamentId: number, teamId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.unregisterTeam(tournamentId, teamId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    refreshDetail(r.tournament);
+  };
+  const startH = async (tournamentId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.startTournament(tournamentId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    refreshDetail(r.tournament);
+    notify('Tournoi lancé — bracket généré');
+  };
+  const reportH = async (tournamentId: number, matchId: number) => {
+    const inp = scoreInputs[matchId] || { s1: '', s2: '' };
+    const s1 = Number(inp.s1), s2 = Number(inp.s2);
+    if (inp.s1 === '' || inp.s2 === '' || Number.isNaN(s1) || Number.isNaN(s2)) { notify('Saisis les deux scores'); return; }
+    setArenaBusy(true);
+    const r = await platformApi.reportMatch(tournamentId, matchId, s1, s2);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    setScoreInputs(prev => { const n = { ...prev }; delete n[matchId]; return n; });
+    refreshDetail(r.tournament);
+  };
+
+  // Pull the player's latest matches from Riot and persist them.
+  const syncRiotH = async () => {
+    if (!user.riotId || !user.tagLine) { notify('Connecte ton Riot ID dans Profil d’abord'); return; }
+    setSyncing(true);
+    const r = await platformApi.syncRiotMatches(Number(user.id));
+    setSyncing(false);
+    if (!r.success) { notify(r.error || 'Synchronisation impossible'); return; }
+    setMatchesReal(true);
+    setStatsData(prev => ({ stats: prev?.stats ?? null, matches: r.matches ?? [] }));
+    notify(r.synced ? `${r.synced} nouveau(x) match(s) synchronisé(s)` : 'Historique déjà à jour');
+  };
+
   const e = useReveal(screen);
 
   const addToCart = (p: ShopItem) => {
@@ -424,7 +559,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     if (s === screen) return;
     setScreenRaw(s);
     // Leave any open detail view so each tab opens at its top level.
-    setDetailAgent(null); setViewPlayer(null); setViewTourney(null);
+    setDetailAgent(null); setViewPlayer(null); setViewTourney(null); setViewArena(null);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   };
 
@@ -659,7 +794,25 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     const wins = matches.filter(m => m.result === 'W').length;
     const losses = matches.length - wins;
 
-    const statGrid = [
+    // When real (synced) matches exist, compute the dashboard live from them;
+    // otherwise fall back to the stored/demo StatsRecord.
+    const real = matchesReal && matches.length > 0;
+    const sumK = matches.reduce((s, m) => s + m.kills, 0);
+    const sumD = matches.reduce((s, m) => s + m.deaths, 0);
+    const liveKd = sumK / Math.max(1, sumD);
+    const liveWin = matches.length ? (wins / matches.length) * 100 : 0;
+    const liveAdr = matches.length ? matches.reduce((s, m) => s + (m.avgDamage ?? 0), 0) / matches.length : 0;
+    const liveHs = matches.length ? matches.reduce((s, m) => s + (m.headshotPct ?? 0), 0) / matches.length : 0;
+    const rankLabel = (user.rankLabel || stats.rank_name || 'Non classé').toUpperCase();
+    // Recent form: most recent first (matches already arrive newest-first).
+    const form = matches.slice(0, 10).map(m => m.result);
+
+    const statGrid = real ? [
+      { label: 'K/D', value: N(liveKd, 2), sub: `${sumK}/${sumD}`, color: C.ink },
+      { label: 'TAUX DE VICTOIRE', value: N(liveWin, 0) + '%', sub: `${wins}V / ${losses}D`, color: C.green },
+      { label: 'DÉGÂTS / ROUND', value: N(liveAdr, 0), sub: 'ADR MOYEN', color: C.ink },
+      { label: 'HEADSHOT %', value: N(liveHs, 0) + '%', sub: `${matches.length} MATCHS`, color: C.red },
+    ] : [
       { label: 'K/D GLOBAL', value: N(stats.kd_ratio, 2), sub: 'SAISON', color: C.ink },
       { label: 'TAUX DE VICTOIRE', value: N(stats.win_rate, 1) + '%', sub: matches.length ? `${wins}V / ${losses}D` : 'GLOBAL', color: C.green },
       { label: 'DÉGÂTS / ROUND', value: N(stats.avg_damage, 0), sub: 'ADR MOYEN', color: C.ink },
@@ -685,10 +838,32 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
           title={<>{(user.username || 'Phantom').toUpperCase()} <span style={{ color: C.muted, fontSize: 24 }}>#{(user.tagLine || 'EUW').toUpperCase()}</span></>}
           right={
             <div style={{ textAlign: 'right', fontFamily: MONO, fontSize: 12, lineHeight: 1.7 }}>
-              <span style={{ color: rankColor(stats.rank_name), fontWeight: 700 }}>{stats.rank_name.toUpperCase()}</span><br />
-              <span style={{ color: C.muted }}>{(user.region || 'EUROPE').toUpperCase()} · {N(stats.rank_rating, 0)} RR</span>
+              <span style={{ color: rankColor(real ? rankLabel : stats.rank_name), fontWeight: 700 }}>{real ? rankLabel : stats.rank_name.toUpperCase()}</span><br />
+              <span style={{ color: C.muted }}>{(user.region || 'EUROPE').toUpperCase()}{real ? '' : ` · ${N(stats.rank_rating, 0)} RR`}</span>
             </div>
           } />
+
+        {/* Sync bar: pull real matches from Riot + recent-form strip. */}
+        <section style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', borderBottom: `1px solid ${C.line}`, paddingBottom: 16 }}>
+          <button onClick={syncRiotH} disabled={syncing}
+            style={{ padding: '10px 18px', border: 0, background: C.ink, color: C.paper, cursor: syncing ? 'default' : 'pointer', opacity: syncing ? .6 : 1, fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+            {syncing ? '⟳ Synchronisation…' : '⟳ Synchroniser Riot'}
+          </button>
+          <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>
+            {real
+              ? `${matches.length} match(s) en base`
+              : (user.riotId ? 'Données démo — clique pour importer ton vrai historique' : 'Connecte ton Riot ID dans Profil pour importer tes matchs')}
+          </span>
+          {form.length > 0 && (
+            <div style={{ display: 'flex', gap: 5, marginLeft: 'auto' }}>
+              <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, alignSelf: 'center', marginRight: 4 }}>FORME</span>
+              {form.map((r, i) => (
+                <span key={i} title={r === 'W' ? 'Victoire' : 'Défaite'}
+                  style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: MONO, fontSize: 10, fontWeight: 700, color: '#fff', background: r === 'W' ? C.green : C.red }}>{r}</span>
+              ))}
+            </div>
+          )}
+        </section>
 
         {loading ? (
           <p style={{ fontFamily: MONO, fontSize: 12, letterSpacing: '.2em', color: C.muted, padding: '40px 0' }} className="animate-pulse">// CHARGEMENT DU DOSSIER…</p>
@@ -1174,10 +1349,257 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   };
 
   /* ── 05 TOURNOIS (real vlr.gg esports data) ──────────────── */
+  /* ── 05b B3 ARENA — community teams, tournaments & brackets ── */
+  const fieldStyle: React.CSSProperties = {
+    padding: '10px 12px', border: `1.5px solid ${C.line2}`, background: C.paper,
+    fontFamily: MONO, fontSize: 12, color: C.ink, outline: 'none', minWidth: 0,
+  };
+  const btnSolid = (extra?: React.CSSProperties): React.CSSProperties => ({
+    padding: '10px 16px', border: 0, background: C.ink, color: C.paper, cursor: 'pointer',
+    fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', ...extra,
+  });
+  const btnGhost: React.CSSProperties = {
+    padding: '7px 12px', border: `1.5px solid ${C.line2}`, background: C.paper, color: C.ink, cursor: 'pointer',
+    fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase',
+  };
+  const statusChip = (status: string) => {
+    const map: Record<string, string> = { open: C.green, live: C.red, completed: C.muted };
+    const label: Record<string, string> = { open: 'INSCRIPTIONS', live: 'EN COURS', completed: 'TERMINÉ' };
+    const col = map[status] || C.ink2;
+    return <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', padding: '5px 10px', border: `1.5px solid ${col}`, color: col }}>{label[status] || status.toUpperCase()}</span>;
+  };
+
+  const openArenaH = async (id: number) => {
+    const r = await platformApi.getOwnTournament(id);
+    if (r.success && r.tournament) setViewArena(r.tournament);
+    else notify(r.error || 'Tournoi introuvable');
+  };
+
+  const renderArenaDetail = (t: OwnTournament) => {
+    const teamName = (id: number | null) => {
+      if (id == null) return '—';
+      const ref = (t.teams || []).find(x => x.teamId === id);
+      return ref ? (ref.tag || ref.name) : `#${id}`;
+    };
+    const isOrganizer = t.createdBy === Number(user.id);
+    const myOwnedTeams = (myTeams || []).filter(tm => tm.ownerId === Number(user.id));
+    const registeredIds = new Set((t.teams || []).map(x => x.teamId));
+    const registerable = myOwnedTeams.filter(tm => !registeredIds.has(tm.id));
+    const matches = t.matches || [];
+    const maxRound = matches.reduce((mx, m) => Math.max(mx, m.round), 0);
+    const roundLabel = (r: number) =>
+      r === maxRound ? 'FINALE' : r === maxRound - 1 ? 'DEMI-FINALES' : r === maxRound - 2 ? 'QUARTS DE FINALE' : `TOUR ${r}`;
+    const rounds = Array.from(new Set(matches.map(m => m.round))).sort((a, b) => a - b);
+    const champion = t.status === 'completed'
+      ? (matches.find(m => m.round === maxRound)?.winnerId ?? null) : null;
+
+    return (
+      <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 24 }}>
+        <button onClick={() => setViewArena(null)} style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', border: `2px solid ${C.ink}`, background: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', cursor: 'pointer' }}>← B3 Arena</button>
+
+        <section style={{ border: `2px solid ${C.ink}`, padding: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0, fontFamily: DISP, fontSize: 40, lineHeight: .9, textTransform: 'uppercase' }}>{t.name}</h2>
+            {statusChip(t.status)}
+          </div>
+          <p style={{ margin: '10px 0 0', fontFamily: MONO, fontSize: 11, color: C.muted, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            {['SINGLE ELIMINATION', t.region || null, t.prizePool ? `PRIZE ${t.prizePool}` : null, `${(t.teams || []).length}/${t.maxTeams} ÉQUIPES`].filter(Boolean).join(' · ')}
+          </p>
+          {champion != null && (
+            <div style={{ marginTop: 16, padding: '12px 16px', background: C.ink, color: C.paper, fontFamily: MONO, fontSize: 13, fontWeight: 700, letterSpacing: '.06em' }}>
+              🏆 CHAMPION · {teamName(champion)}
+            </div>
+          )}
+        </section>
+
+        {/* Registered teams */}
+        <section>
+          <h3 style={{ margin: '0 0 12px', fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.red }}>// ÉQUIPES INSCRITES ({(t.teams || []).length})</h3>
+          {(t.teams || []).length === 0
+            ? <p style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucune équipe inscrite pour l’instant.</p>
+            : <div style={{ borderTop: `1px solid ${C.line}` }}>
+                {(t.teams || []).map(team => {
+                  const canWithdraw = t.status === 'open' && (isOrganizer || myOwnedTeams.some(o => o.id === team.teamId));
+                  return (
+                    <div key={team.teamId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 4px', borderBottom: `1px solid ${C.line}` }}>
+                      <span style={{ fontFamily: DISP, fontSize: 18, minWidth: 54, color: C.ink }}>{team.tag || '—'}</span>
+                      <span style={{ flex: 1, fontFamily: UI, fontWeight: 600 }}>{team.name}</span>
+                      {canWithdraw && <button disabled={arenaBusy} onClick={() => unregisterH(t.id, team.teamId)} style={{ ...btnGhost, color: C.red, borderColor: C.red }}>Retirer</button>}
+                    </div>
+                  );
+                })}
+              </div>}
+        </section>
+
+        {/* Registration + organizer controls (only while open) */}
+        {t.status === 'open' && (
+          <section style={{ border: `1.5px solid ${C.line2}`, padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <h3 style={{ margin: 0, fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.ink }}>// INSCRIPTION</h3>
+            {registerable.length > 0
+              ? <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {registerable.map(tm => (
+                    <button key={tm.id} disabled={arenaBusy} onClick={() => registerH(t.id, tm.id)} style={btnSolid({ fontSize: 12 })}>+ Inscrire {tm.tag || tm.name}</button>
+                  ))}
+                </div>
+              : <p style={{ margin: 0, fontFamily: MONO, fontSize: 11, color: C.muted }}>
+                  {myOwnedTeams.length === 0 ? 'Crée une équipe (dont tu es capitaine) pour t’inscrire.' : 'Toutes tes équipes sont déjà inscrites.'}
+                </p>}
+            {isOrganizer && (
+              <div style={{ borderTop: `1px solid ${C.line}`, paddingTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <button disabled={arenaBusy || (t.teams || []).length < 2} onClick={() => startH(t.id)} style={btnSolid({ background: C.red, opacity: (t.teams || []).length < 2 ? .5 : 1 })}>▶ Lancer le tournoi</button>
+                <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>Génère le bracket à élimination directe. Minimum 2 équipes.</span>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Bracket */}
+        {matches.length > 0 && (
+          <section>
+            <h3 style={{ margin: '0 0 12px', fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.red }}>// BRACKET</h3>
+            <div style={{ display: 'flex', gap: 20, overflowX: 'auto', paddingBottom: 8 }}>
+              {rounds.map(r => (
+                <div key={r} style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 230 }}>
+                  <div style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.12em', color: C.muted }}>{roundLabel(r)}</div>
+                  {matches.filter(m => m.round === r).map(m => {
+                    const canScore = isOrganizer && t.status === 'live' && m.status !== 'done' && m.team1Id != null && m.team2Id != null;
+                    const inp = scoreInputs[m.id] || { s1: '', s2: '' };
+                    const row = (id: number | null, score: number, isWinner: boolean) => (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 10px', background: isWinner ? C.ink : 'transparent', color: isWinner ? C.paper : C.ink }}>
+                        <span style={{ fontFamily: UI, fontSize: 13, fontWeight: isWinner ? 800 : 600 }}>{teamName(id)}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700 }}>{m.status === 'done' ? score : ''}</span>
+                      </div>
+                    );
+                    return (
+                      <div key={m.id} style={{ border: `1.5px solid ${m.status === 'done' ? C.ink : C.line2}` }}>
+                        {row(m.team1Id, m.score1, m.status === 'done' && m.winnerId === m.team1Id)}
+                        <div style={{ height: 1, background: C.line }} />
+                        {row(m.team2Id, m.score2, m.status === 'done' && m.winnerId === m.team2Id)}
+                        {canScore && (
+                          <div style={{ display: 'flex', gap: 6, padding: 8, borderTop: `1px solid ${C.line}`, background: C.paper2 }}>
+                            <input value={inp.s1} onChange={ev => setScoreInputs(p => ({ ...p, [m.id]: { ...inp, s1: ev.target.value } }))} placeholder="13" inputMode="numeric" style={{ ...fieldStyle, width: 48, padding: '6px 8px', textAlign: 'center' }} />
+                            <input value={inp.s2} onChange={ev => setScoreInputs(p => ({ ...p, [m.id]: { ...inp, s2: ev.target.value } }))} placeholder="7" inputMode="numeric" style={{ ...fieldStyle, width: 48, padding: '6px 8px', textAlign: 'center' }} />
+                            <button disabled={arenaBusy} onClick={() => reportH(t.id, m.id)} style={{ ...btnGhost, flex: 1 }}>Valider</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    );
+  };
+
+  const renderArena = () => {
+    if (viewArena) return renderArenaDetail(viewArena);
+    const head = <ScreenHead num="05" eyebrow="// B3 ARENA · COMMUNAUTÉ" title={<>Tournois</>} right={arenaToggle()} />;
+    const wrap = (body: React.ReactNode) => (
+      <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 28 }}>{head}{body}</div>
+    );
+    if (myTeams === null || ownTournaments === null) {
+      return wrap(<p style={{ fontFamily: MONO, fontSize: 12, letterSpacing: '.2em', color: C.muted, padding: '40px 0' }} className="animate-pulse">// CHARGEMENT DE L’ARÈNE…</p>);
+    }
+
+    return wrap(<>
+      {/* MES ÉQUIPES */}
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <h3 style={{ margin: 0, fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.red }}>// MES ÉQUIPES</h3>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={teamForm.name} onChange={ev => setTeamForm(f => ({ ...f, name: ev.target.value }))} placeholder="Nom de l’équipe" style={{ ...fieldStyle, flex: '1 1 220px' }} />
+          <input value={teamForm.tag} onChange={ev => setTeamForm(f => ({ ...f, tag: ev.target.value }))} placeholder="TAG" maxLength={10} style={{ ...fieldStyle, width: 90 }} />
+          <button disabled={arenaBusy} onClick={createTeamH} style={btnSolid()}>+ Créer</button>
+        </div>
+        {myTeams.length === 0
+          ? <p style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>Tu n’as pas encore d’équipe. Crée-en une pour participer aux tournois.</p>
+          : myTeams.map(tm => {
+              const isCaptain = tm.ownerId === Number(user.id);
+              return (
+                <div key={tm.id} style={{ border: `1.5px solid ${C.line2}`, padding: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: DISP, fontSize: 22, color: C.ink }}>{tm.tag || '—'}</span>
+                    <span style={{ flex: 1, fontFamily: UI, fontSize: 16, fontWeight: 700 }}>{tm.name}</span>
+                    <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted }}>{isCaptain ? 'CAPITAINE' : 'MEMBRE'}</span>
+                    {isCaptain && <button disabled={arenaBusy} onClick={() => deleteTeamH(tm.id)} style={{ ...btnGhost, color: C.red, borderColor: C.red }}>Supprimer</button>}
+                  </div>
+                  <div style={{ marginTop: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                    {(tm.members || []).map(mb => (
+                      <span key={mb.userId} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', background: C.paper2, border: `1px solid ${C.line}`, fontFamily: MONO, fontSize: 11 }}>
+                        {mb.role === 'owner' ? '★' : '·'} {mb.username}
+                        {isCaptain && mb.role !== 'owner' && <button disabled={arenaBusy} onClick={() => removeMemberH(tm.id, mb.userId)} title="Retirer" style={{ border: 0, background: 'transparent', color: C.red, cursor: 'pointer', fontFamily: MONO, fontWeight: 700 }}>×</button>}
+                      </span>
+                    ))}
+                  </div>
+                  {isCaptain && (
+                    <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                      <input value={memberInputs[tm.id] || ''} onChange={ev => setMemberInputs(p => ({ ...p, [tm.id]: ev.target.value }))} placeholder="Pseudo à ajouter" style={{ ...fieldStyle, flex: '1 1 180px' }} />
+                      <button disabled={arenaBusy} onClick={() => addMemberH(tm.id)} style={btnGhost}>+ Membre</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+      </section>
+
+      {/* CRÉER UN TOURNOI */}
+      <section style={{ border: `1.5px solid ${C.line2}`, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <h3 style={{ margin: 0, fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.ink }}>// ORGANISER UN TOURNOI</h3>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <input value={tourForm.name} onChange={ev => setTourForm(f => ({ ...f, name: ev.target.value }))} placeholder="Nom du tournoi" style={{ ...fieldStyle, flex: '1 1 220px' }} />
+          <select value={tourForm.maxTeams} onChange={ev => setTourForm(f => ({ ...f, maxTeams: ev.target.value }))} style={{ ...fieldStyle, width: 130 }}>
+            <option value="4">4 équipes</option>
+            <option value="8">8 équipes</option>
+            <option value="16">16 équipes</option>
+            <option value="32">32 équipes</option>
+          </select>
+          <input value={tourForm.region} onChange={ev => setTourForm(f => ({ ...f, region: ev.target.value }))} placeholder="Région (EU…)" style={{ ...fieldStyle, width: 130 }} />
+          <input value={tourForm.prizePool} onChange={ev => setTourForm(f => ({ ...f, prizePool: ev.target.value }))} placeholder="Prize pool" style={{ ...fieldStyle, width: 140 }} />
+          <button disabled={arenaBusy} onClick={createTournamentH} style={btnSolid()}>+ Créer</button>
+        </div>
+      </section>
+
+      {/* TOURNOIS COMMUNAUTÉ */}
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <h3 style={{ margin: 0, fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.red }}>// TOURNOIS COMMUNAUTÉ</h3>
+        {ownTournaments.length === 0
+          ? <p style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucun tournoi communautaire pour l’instant. Sois le premier à en organiser un !</p>
+          : <div style={{ borderTop: `2px solid ${C.ink}` }}>
+              {ownTournaments.map(t => (
+                <div key={t.id} className="b3-row" onClick={() => openArenaH(t.id)} title={`Voir ${t.name}`} style={{ display: 'flex', alignItems: 'center', gap: 18, padding: '18px 4px', borderBottom: `1px solid ${C.line}`, cursor: 'pointer' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <h4 style={{ margin: 0, fontFamily: DISP, fontSize: 24, lineHeight: .9, textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</h4>
+                    <p style={{ margin: '5px 0 0', fontFamily: MONO, fontSize: 11, color: C.muted, textTransform: 'uppercase' }}>{['SINGLE ELIM', t.region || null, `${t.teamCount ?? 0}/${t.maxTeams} ÉQUIPES`].filter(Boolean).join(' · ')}</p>
+                  </div>
+                  {t.prizePool && <span style={{ fontFamily: MONO, fontSize: 18, fontWeight: 700, color: C.red }}>{t.prizePool}</span>}
+                  {statusChip(t.status)}
+                </div>
+              ))}
+            </div>}
+      </section>
+    </>);
+  };
+
+  // Segmented toggle between the live pro feed (vlr.gg) and the B3 Arena (community).
+  const arenaToggle = () => {
+    const tab = (id: 'live' | 'arena', label: string) => (
+      <button key={id} onClick={() => { setArenaMode(id); setViewTourney(null); setViewArena(null); }}
+        style={{ padding: '9px 16px', border: `1.5px solid ${C.ink}`, cursor: 'pointer',
+          background: arenaMode === id ? C.ink : C.paper, color: arenaMode === id ? C.paper : C.ink,
+          fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase' }}>
+        {label}
+      </button>
+    );
+    return <div style={{ display: 'flex', gap: 8 }}>{tab('live', '● Live Pro')}{tab('arena', '⬡ B3 Arena')}</div>;
+  };
+
   const renderTournaments = () => {
+    if (arenaMode === 'arena') return renderArena();
     if (viewTourney) return renderTournamentDetail(viewTourney);
     const onDark = 'rgba(231,227,217,.2)';
-    const head = <ScreenHead num="05" eyebrow="// COMPÉTITIONS · TEMPS RÉEL" title={<>Tournois</>} />;
+    const head = <ScreenHead num="05" eyebrow="// COMPÉTITIONS · TEMPS RÉEL" title={<>Tournois</>} right={arenaToggle()} />;
     const wrap = (body: React.ReactNode) => (
       <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 28 }}>{head}{body}</div>
     );

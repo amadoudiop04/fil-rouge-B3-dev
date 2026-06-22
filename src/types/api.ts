@@ -45,6 +45,12 @@ export interface MatchWithUser {
   deaths: number;
   assists: number;
   played_at: string;
+  // Extra fields present on persisted Riot matches (optional for legacy/demo rows).
+  mode?: string;
+  headshotPct?: number;
+  avgDamage?: number;
+  roundsWon?: number;
+  roundsLost?: number;
 }
 
 export interface CreateOrderPayload {
