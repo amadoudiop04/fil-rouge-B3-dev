@@ -36,6 +36,10 @@ export interface PromoCode {
   id: number; code: string; percent: number; active: number; createdAt?: string;
 }
 
+export interface AuditEntry {
+  id: number; admin: string | null; action: string; target: string | null; createdAt: string;
+}
+
 export interface AdminOrderItem { name: string; quantity: number; price: number; }
 export interface AdminOrder {
   id: number;
@@ -66,10 +70,11 @@ export interface TeamMember {
   userId: number; username: string; role: string;
   avatarUrl?: string | null; rankLabel?: string | null;
 }
+export interface TeamRequest { userId: number; username: string; rankLabel?: string | null; }
 export interface Team {
   id: number; name: string; tag?: string | null; ownerId: number;
   logoUrl?: string | null; description?: string | null; createdAt?: string;
-  members?: TeamMember[]; memberCount?: number;
+  members?: TeamMember[]; memberCount?: number; requests?: TeamRequest[];
 }
 export interface BracketMatchRow {
   id: number; round: number; slot: number;
@@ -127,9 +132,12 @@ interface BridgeApi {
 
 const STATS_KEY = 'web-user-stats';
 const ORDERS_KEY = 'web-orders';
+const TOKEN_KEY = 'b3-auth-token';
 const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:3001';
 
-let authToken: string | null = null;
+// Token persists in localStorage so the session survives a page refresh
+// (the server side persists it in the DB across restarts).
+let authToken: string | null = typeof window !== 'undefined' ? window.localStorage.getItem(TOKEN_KEY) : null;
 
 const fallbackProducts: ProductRecord[] = [
   {
@@ -240,6 +248,9 @@ const getAuthToken = (): string | null => authToken;
 
 const setAuthToken = (token: string | null): void => {
   authToken = token;
+  if (typeof window === 'undefined') return;
+  if (token) window.localStorage.setItem(TOKEN_KEY, token);
+  else window.localStorage.removeItem(TOKEN_KEY);
 };
 
 const callApi = async <T>(path: string, init?: RequestInit): Promise<T | null> => {
@@ -494,6 +505,31 @@ export const platformApi = {
     return r ?? { success: false, error: 'API indisponible' };
   },
 
+  async adminGetAuditLog(): Promise<{ success: boolean; entries?: AuditEntry[]; error?: string }> {
+    const r = await callApi<{ success: boolean; entries?: AuditEntry[]; error?: string }>('/admin/audit-log');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  // ── Admin: team management ───────────────────────────────────────────────────
+  async adminGetTeams(): Promise<{ success: boolean; teams?: Team[]; error?: string }> {
+    const r = await callApi<{ success: boolean; teams?: Team[]; error?: string }>('/admin/teams');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminAddTeamMember(teamId: number, username: string) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/admin/teams/${teamId}/members`, {
+      method: 'POST', body: JSON.stringify({ username }),
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async adminRemoveTeamMember(teamId: number, userId: number) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/admin/teams/${teamId}/members/${userId}`, {
+      method: 'DELETE',
+    });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
   async getLfgPlayers(): Promise<{ success: boolean; players?: unknown[]; error?: string }> {
     const result = await callApi<{ success: boolean; players?: unknown[]; error?: string }>('/users/lfg');
     return result ?? { success: false, players: [] };
@@ -600,6 +636,14 @@ export const platformApi = {
     return result ?? { success: false, matches: [], error: 'API indisponible' };
   },
 
+  // ── Realtime (WebSocket) ────────────────────────────────────────────────────
+  // Builds the ws:// URL with the current auth token, or null if logged out.
+  realtimeUrl(): string | null {
+    if (!authToken) return null;
+    const wsBase = API_BASE_URL.replace(/^http/, 'ws');
+    return `${wsBase}/ws?token=${encodeURIComponent(authToken)}`;
+  },
+
   // ── Promo codes ─────────────────────────────────────────────────────────────
   async validatePromo(code: string): Promise<{ success: boolean; code?: string; percent?: number; error?: string }> {
     const r = await callApi<{ success: boolean; code?: string; percent?: number; error?: string }>('/promo/validate', {
@@ -687,6 +731,21 @@ export const platformApi = {
 
   async deleteTeam(teamId: number) {
     const r = await callApi<{ success: boolean; error?: string }>(`/teams/${teamId}`, { method: 'DELETE' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async requestJoinTeam(teamId: number) {
+    const r = await callApi<{ success: boolean; error?: string }>(`/teams/${teamId}/request`, { method: 'POST' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async acceptTeamRequest(teamId: number, userId: number) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/teams/${teamId}/requests/${userId}/accept`, { method: 'POST' });
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
+  async declineTeamRequest(teamId: number, userId: number) {
+    const r = await callApi<{ success: boolean; team?: Team; error?: string }>(`/teams/${teamId}/requests/${userId}/decline`, { method: 'POST' });
     return r ?? { success: false, error: 'API indisponible' };
   },
 

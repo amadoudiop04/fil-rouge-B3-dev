@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { User } from '../contexts/AuthContext';
-import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile, type PromoCode } from '../services/platformApi';
+import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile, type PromoCode, type AuditEntry } from '../services/platformApi';
 import type { StatsRecord, MatchWithUser, ProductRecord } from '../types/api';
 import { getLiveMatches, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
 
@@ -255,6 +255,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   // B3 Arena — community teams + own tournaments + brackets.
   const [arenaMode, setArenaMode] = useState<'live' | 'arena'>('live');
   const [myTeams, setMyTeams] = useState<Team[] | null>(null);
+  const [allTeams, setAllTeams] = useState<Team[] | null>(null);
   const [ownTournaments, setOwnTournaments] = useState<OwnTournament[] | null>(null);
   const [viewArena, setViewArena] = useState<OwnTournament | null>(null);
   const [teamForm, setTeamForm] = useState({ name: '', tag: '' });
@@ -264,9 +265,13 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [arenaBusy, setArenaBusy] = useState(false);
 
   // Admin management: sub-tab + live lists.
-  const [adminTab, setAdminTab] = useState<'overview' | 'users' | 'merch' | 'discord' | 'promo'>('overview');
+  const [adminTab, setAdminTab] = useState<'overview' | 'users' | 'merch' | 'discord' | 'promo' | 'journal' | 'teams'>('overview');
   const [promoCodes, setPromoCodes] = useState<PromoCode[] | null>(null);
   const [promoCodeForm, setPromoCodeForm] = useState({ code: '', percent: '' });
+  const [auditLog, setAuditLog] = useState<AuditEntry[] | null>(null);
+  const [adminTeams, setAdminTeams] = useState<Team[] | null>(null);
+  const [adminTeamSel, setAdminTeamSel] = useState<number | null>(null);
+  const [adminTeamInput, setAdminTeamInput] = useState('');
   const [adminUsers, setAdminUsers] = useState<AdminUser[] | null>(null);
   const [adminProducts, setAdminProducts] = useState<ProductRecord[] | null>(null);
   const [prodForm, setProdForm] = useState({ name: '', price: '', category: 'ACCESSOIRES', image_url: '', stock_quantity: '' });
@@ -356,6 +361,10 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     platformApi.getDiscordServers().then(r => setDiscordServers(r.success && r.servers ? r.servers : []));
   const reloadPromos = () =>
     platformApi.adminGetPromoCodes().then(r => setPromoCodes(r.success && r.codes ? r.codes : []));
+  const reloadAudit = () =>
+    platformApi.adminGetAuditLog().then(r => setAuditLog(r.success && r.entries ? r.entries : []));
+  const reloadAdminTeams = () =>
+    platformApi.adminGetTeams().then(r => setAdminTeams(r.success && r.teams ? r.teams : []));
   // Refresh the public shop catalogue (so admin merch changes show on the Shop tab).
   const reloadShop = () =>
     platformApi.getProducts().then(r => {
@@ -371,6 +380,8 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     reloadAdminUsers().catch(() => setAdminUsers([]));
     reloadAdminProducts().catch(() => setAdminProducts([]));
     reloadPromos().catch(() => setPromoCodes([]));
+    reloadAudit().catch(() => setAuditLog([]));
+    reloadAdminTeams().catch(() => setAdminTeams([]));
   }, [user.isAdmin, screen]);
 
   // Discord servers — loaded when viewing the Discord page or the Admin panel.
@@ -446,9 +457,10 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // B3 Arena data (my teams + community tournaments) — loaded on the Tournois tab.
   const reloadArena = () =>
-    Promise.all([platformApi.getMyTeams(), platformApi.getOwnTournaments()]).then(([t, to]) => {
+    Promise.all([platformApi.getMyTeams(), platformApi.getOwnTournaments(), platformApi.getTeams()]).then(([t, to, at]) => {
       setMyTeams(t.success && t.teams ? t.teams : []);
       setOwnTournaments(to.success && to.tournaments ? to.tournaments : []);
+      setAllTeams(at.success && at.teams ? at.teams : []);
     });
   useEffect(() => {
     if (screen !== 'tournaments') return;
@@ -466,6 +478,40 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     load();
     const id = window.setInterval(load, 45000);
     return () => { alive = false; window.clearInterval(id); };
+  }, [user.id]);
+
+  // Realtime updates over WebSocket — instant bell + live bracket scores.
+  useEffect(() => {
+    let socket: WebSocket | null = null;
+    let retry: number | undefined;
+    let closed = false;
+
+    const connect = () => {
+      const url = platformApi.realtimeUrl();
+      if (!url) return;
+      socket = new WebSocket(url);
+      socket.onmessage = (ev) => {
+        let msg: { type?: string; tournamentId?: number; tournament?: OwnTournament };
+        try { msg = JSON.parse(ev.data as string); } catch { return; }
+        if (msg.type === 'notification') {
+          platformApi.getNotifications(Number(user.id)).then(r => {
+            if (r.success) { setNotifs(r.notifications ?? []); setUnread(r.unread ?? 0); }
+          }).catch(() => undefined);
+        } else if (msg.type === 'tournament' && msg.tournament) {
+          const t = msg.tournament;
+          // Update the open detail view live, and patch the list row.
+          setViewArena(prev => (prev && prev.id === msg.tournamentId ? t : prev));
+          setOwnTournaments(prev => prev
+            ? prev.map(x => x.id === msg.tournamentId ? { ...x, status: t.status, teamCount: (t.teams || []).length } : x)
+            : prev);
+        }
+      };
+      socket.onclose = () => { if (!closed) retry = window.setTimeout(connect, 3000); };
+      socket.onerror = () => { try { socket?.close(); } catch { /* ignore */ } };
+    };
+    connect();
+
+    return () => { closed = true; window.clearTimeout(retry); try { socket?.close(); } catch { /* ignore */ } };
   }, [user.id]);
 
   // My orders — loaded when the Profil tab opens.
@@ -531,6 +577,29 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     if (!r.success) { notify(r.error || 'Échec'); return; }
     await reloadArena();
   };
+  const requestJoinH = async (teamId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.requestJoinTeam(teamId);
+    setArenaBusy(false);
+    notify(r.success ? 'Demande envoyée au capitaine' : (r.error || 'Échec'));
+  };
+  const acceptReqH = async (teamId: number, userId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.acceptTeamRequest(teamId, userId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    await reloadArena();
+    notify('Demande acceptée');
+  };
+  const declineReqH = async (teamId: number, userId: number) => {
+    setArenaBusy(true);
+    const r = await platformApi.declineTeamRequest(teamId, userId);
+    setArenaBusy(false);
+    if (!r.success) { notify(r.error || 'Échec'); return; }
+    await reloadArena();
+    notify('Demande refusée');
+  };
+
   const createTournamentH = async () => {
     const name = tourForm.name.trim();
     if (!name) { notify('Nom du tournoi requis'); return; }
@@ -1591,6 +1660,18 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
                       </span>
                     ))}
                   </div>
+                  {isCaptain && (tm.requests?.length ?? 0) > 0 && (
+                    <div style={{ marginTop: 12, padding: 12, background: C.paper2, border: `1px solid ${C.line}` }}>
+                      <p style={{ margin: '0 0 8px', fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: C.red }}>// DEMANDES ({tm.requests!.length})</p>
+                      {tm.requests!.map(rq => (
+                        <div key={rq.userId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+                          <span onClick={() => openProfileH(rq.userId)} title="Voir le profil" style={{ flex: 1, fontFamily: UI, fontWeight: 600, cursor: 'pointer' }}>{rq.username}{rq.rankLabel ? <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted }}> · {rq.rankLabel}</span> : null}</span>
+                          <button disabled={arenaBusy} onClick={() => acceptReqH(tm.id, rq.userId)} style={{ ...btnGhost, color: C.green, borderColor: C.green }}>Accepter</button>
+                          <button disabled={arenaBusy} onClick={() => declineReqH(tm.id, rq.userId)} style={{ ...btnGhost, color: C.red, borderColor: C.red }}>Refuser</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {isCaptain && (
                     <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
                       <input value={memberInputs[tm.id] || ''} onChange={ev => setMemberInputs(p => ({ ...p, [tm.id]: ev.target.value }))} placeholder="Pseudo à ajouter" style={{ ...fieldStyle, flex: '1 1 180px' }} />
@@ -1601,6 +1682,28 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
               );
             })}
       </section>
+
+      {/* REJOINDRE UNE ÉQUIPE */}
+      {(() => {
+        const myIds = new Set((myTeams ?? []).map(t => t.id));
+        const joinable = (allTeams ?? []).filter(t => !myIds.has(t.id));
+        if (joinable.length === 0) return null;
+        return (
+          <section style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <h3 style={{ margin: 0, fontFamily: MONO, fontSize: 12, letterSpacing: '.16em', color: C.red }}>// REJOINDRE UNE ÉQUIPE</h3>
+            <div style={{ borderTop: `2px solid ${C.ink}` }}>
+              {joinable.map(t => (
+                <div key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 4px', borderBottom: `1px solid ${C.line}` }}>
+                  <span style={{ fontFamily: DISP, fontSize: 20, minWidth: 54 }}>{t.tag || '—'}</span>
+                  <span style={{ flex: 1, fontFamily: UI, fontSize: 15, fontWeight: 700 }}>{t.name}</span>
+                  <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>{t.memberCount ?? 0} MEMBRE{(t.memberCount ?? 0) > 1 ? 'S' : ''}</span>
+                  <button disabled={arenaBusy} onClick={() => requestJoinH(t.id)} style={btnGhost}>Demander à rejoindre</button>
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* CRÉER UN TOURNOI */}
       <section style={{ border: `1.5px solid ${C.line2}`, padding: 18, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -2407,8 +2510,10 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       { id: 'overview', label: 'Vue d\'ensemble' },
       { id: 'users', label: 'Membres' },
       { id: 'merch', label: 'Boutique' },
+      { id: 'teams', label: 'Équipes' },
       { id: 'discord', label: 'Discord' },
       { id: 'promo', label: 'Codes promo' },
+      { id: 'journal', label: 'Journal' },
     ];
     const tabRow = (
       <div style={{ display: 'flex', border: `2px solid ${C.ink}`, width: 'max-content' }}>
@@ -2679,10 +2784,117 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       </>
     );
 
+    // ── Team management actions ──────────────────────────────
+    const afterAdminTeam = (team: Team | undefined, okMsg: string, ok: boolean, err?: string) => {
+      notify(ok ? okMsg : (err || 'Échec'));
+      if (ok && team) setAdminTeams(prev => prev ? prev.map(t => t.id === team.id ? team : t) : prev);
+    };
+    const addAdminMember = (teamId: number) => {
+      const username = adminTeamInput.trim();
+      if (!username) { notify('Pseudo requis'); return; }
+      setBusyId(-4);
+      platformApi.adminAddTeamMember(teamId, username)
+        .then(r => { afterAdminTeam(r.team, 'Joueur ajouté', r.success, r.error); if (r.success) setAdminTeamInput(''); })
+        .catch(() => afterAdminTeam(undefined, '', false))
+        .finally(() => setBusyId(null));
+    };
+    const removeAdminMember = (teamId: number, userId: number) => {
+      setBusyId(userId);
+      platformApi.adminRemoveTeamMember(teamId, userId)
+        .then(r => afterAdminTeam(r.team, 'Joueur retiré', r.success, r.error))
+        .catch(() => afterAdminTeam(undefined, '', false))
+        .finally(() => setBusyId(null));
+    };
+
+    const aTeams = adminTeams ?? [];
+    const selTeam = adminTeamSel != null ? aTeams.find(t => t.id === adminTeamSel) : undefined;
+    const teamsBody = adminTeams === null ? (
+      <p style={{ fontFamily: MONO, fontSize: 12, letterSpacing: '.2em', color: C.muted, padding: '40px 0' }} className="animate-pulse">// CHARGEMENT DES ÉQUIPES…</p>
+    ) : selTeam ? (
+      // ── Roster detail for the selected team ──
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <button onClick={() => { setAdminTeamSel(null); setAdminTeamInput(''); }} style={{ alignSelf: 'flex-start', padding: '8px 14px', border: `2px solid ${C.ink}`, background: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', cursor: 'pointer' }}>← Toutes les équipes</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontFamily: DISP, fontSize: 30 }}>{selTeam.tag || '—'}</span>
+          <h3 style={{ margin: 0, fontFamily: DISP, fontSize: 30, textTransform: 'uppercase' }}>{selTeam.name}</h3>
+          <span style={{ fontFamily: MONO, fontSize: 12, color: (selTeam.members?.length ?? 0) >= 5 ? C.red : C.muted }}>{selTeam.members?.length ?? 0}/5 JOUEURS</span>
+        </div>
+        <div style={{ border: `2px solid ${C.ink}` }}>
+          {(selTeam.members ?? []).map((mb, i) => (
+            <div key={mb.userId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: i < (selTeam.members!.length - 1) ? `1px solid ${C.line}` : 0 }}>
+              <span style={{ height: 32, width: 32, display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.paper3, fontFamily: DISP, fontSize: 15 }}>{(mb.username[0] || '?').toUpperCase()}</span>
+              <span style={{ flex: 1, fontFamily: UI, fontSize: 14, fontWeight: 700, cursor: 'pointer' }} onClick={() => openProfileH(mb.userId)} title="Voir le profil">{mb.username}</span>
+              {mb.rankLabel && <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>{mb.rankLabel}</span>}
+              <span style={{ fontFamily: MONO, fontSize: 10, color: mb.role === 'owner' ? C.red : C.muted }}>{mb.role === 'owner' ? '★ CAPITAINE' : 'MEMBRE'}</span>
+              {mb.role !== 'owner'
+                ? <button onClick={() => removeAdminMember(selTeam.id, mb.userId)} disabled={busyId === mb.userId} style={{ padding: '6px 12px', border: `1.5px solid ${C.red}`, background: C.paper, color: C.red, fontFamily: UI, fontSize: 11, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>Retirer</button>
+                : <span style={{ width: 64 }} />}
+            </div>
+          ))}
+        </div>
+        {(selTeam.members?.length ?? 0) >= 5 ? (
+          <p style={{ margin: 0, fontFamily: MONO, fontSize: 12, color: C.red }}>⛔ Équipe complète — 5 joueurs maximum, impossible d’ajouter.</p>
+        ) : (
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input value={adminTeamInput} onChange={ev => setAdminTeamInput(ev.target.value)} placeholder="Pseudo du joueur à ajouter" style={{ ...finp, flex: '1 1 240px' }} />
+            <button onClick={() => addAdminMember(selTeam.id)} disabled={busyId === -4} style={{ padding: '0 24px', border: 0, background: C.red, color: '#fff', fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: busyId === -4 ? 'wait' : 'pointer', opacity: busyId === -4 ? 0.6 : 1 }}>+ Ajouter</button>
+          </div>
+        )}
+      </section>
+    ) : (
+      // ── List of all teams ──
+      <section>
+        <p style={{ ...kicker('// ÉQUIPES'), margin: '0 0 16px', letterSpacing: '.14em' }}>// ÉQUIPES — clique pour gérer les joueurs</p>
+        {aTeams.length === 0 ? (
+          <div style={{ border: `2px solid ${C.ink}`, padding: 24, fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucune équipe pour l’instant.</div>
+        ) : (
+          <div style={{ border: `2px solid ${C.ink}` }}>
+            {aTeams.map((t, i) => (
+              <div key={t.id} className="b3-row" onClick={() => setAdminTeamSel(t.id)} title={`Gérer ${t.name}`} style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', borderBottom: i < aTeams.length - 1 ? `1px solid ${C.line}` : 0, cursor: 'pointer' }}>
+                <span style={{ fontFamily: DISP, fontSize: 20, minWidth: 54 }}>{t.tag || '—'}</span>
+                <span style={{ flex: 1, fontFamily: UI, fontSize: 15, fontWeight: 700 }}>{t.name}</span>
+                <span style={{ fontFamily: MONO, fontSize: 12, color: (t.members?.length ?? 0) >= 5 ? C.red : C.muted }}>{t.members?.length ?? 0}/5</span>
+                <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>→</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+
+    // ── Audit log (read-only) ────────────────────────────────
+    const entries = auditLog ?? [];
+    const journalBody = (
+      <section>
+        <p style={{ ...kicker('// JOURNAL_DES_ACTIONS'), margin: '0 0 16px', letterSpacing: '.14em' }}>// JOURNAL_DES_ACTIONS — 100 dernières</p>
+        {auditLog === null ? (
+          <p style={{ fontFamily: MONO, fontSize: 12, letterSpacing: '.2em', color: C.muted, padding: '40px 0' }} className="animate-pulse">// CHARGEMENT DU JOURNAL…</p>
+        ) : entries.length === 0 ? (
+          <div style={{ border: `2px solid ${C.ink}`, padding: 24, fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucune action enregistrée pour l’instant.</div>
+        ) : (
+          <div style={{ border: `2px solid ${C.ink}` }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '150px 1.2fr 1.4fr 130px', gap: 14, padding: '12px 18px', borderBottom: `2px solid ${C.ink}`, background: C.paper2, fontFamily: MONO, fontSize: 10, letterSpacing: '.1em', color: C.muted }}>
+              <span>ADMIN</span><span>ACTION</span><span>CIBLE</span><span style={{ textAlign: 'right' }}>QUAND</span>
+            </div>
+            {entries.map((a, i) => (
+              <div key={a.id} style={{ display: 'grid', gridTemplateColumns: '150px 1.2fr 1.4fr 130px', gap: 14, alignItems: 'center', padding: '11px 18px', borderBottom: i < entries.length - 1 ? `1px solid ${C.line}` : 0 }}>
+                <span style={{ fontFamily: UI, fontSize: 13, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.admin || '—'}</span>
+                <span style={{ fontFamily: MONO, fontSize: 12, color: C.ink }}>{a.action}</span>
+                <span style={{ fontFamily: MONO, fontSize: 12, color: C.ink2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.target || '—'}</span>
+                <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted, textAlign: 'right' }}>{new Date(a.createdAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    );
+
     const body = adminTab === 'users' ? usersBody
       : adminTab === 'merch' ? merchBody
       : adminTab === 'discord' ? discordBody
       : adminTab === 'promo' ? promoBody
+      : adminTab === 'teams' ? teamsBody
+      : adminTab === 'journal' ? journalBody
       : overviewBody;
 
     return wrap(<>

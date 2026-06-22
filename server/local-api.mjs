@@ -4,11 +4,13 @@ import express from 'express';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
+import { WebSocketServer } from 'ws';
 
 dotenv.config();
 
 const API_PORT = Number(process.env.API_PORT || 3001);
 const SALT_ROUNDS = 10;
+const TEAM_MAX_MEMBERS = 5; // a Valorant roster — no team may exceed this
 // Front-end origin allowed to call this API (browser CORS). Override via env if needed.
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 
@@ -23,7 +25,22 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-const sessions = new Map();
+// ── Realtime (WebSocket) registry ───────────────────────────
+// userId -> Set<ws>. Populated on connection, used to push live updates.
+const wsClients = new Map();
+const wsSendToUser = (userId, payload) => {
+  const set = wsClients.get(Number(userId));
+  if (!set) return;
+  const msg = JSON.stringify(payload);
+  for (const ws of set) { try { if (ws.readyState === 1) ws.send(msg); } catch { /* ignore */ } }
+};
+const wsBroadcast = (payload) => {
+  const msg = JSON.stringify(payload);
+  for (const set of wsClients.values()) {
+    for (const ws of set) { try { if (ws.readyState === 1) ws.send(msg); } catch { /* ignore */ } }
+  }
+};
+
 
 // ── vlr.gg (esports) proxy — real Valorant data, no token, short cache ──
 // Uses the community "vlresports" wrapper around vlr.gg. Proxied server-side so
@@ -194,6 +211,16 @@ const initDb = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   `);
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS team_requests (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      team_id INT(11) NOT NULL,
+      user_id INT(11) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      UNIQUE KEY uniq_team_request (team_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS team_members (
       id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
       team_id INT(11) NOT NULL,
@@ -225,6 +252,25 @@ const initDb = async () => {
       checked_in TINYINT(1) NOT NULL DEFAULT 0,
       registered_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
       UNIQUE KEY uniq_tourn_team (tournament_id, team_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      admin_id INT(11) DEFAULT NULL,
+      admin_username VARCHAR(50) DEFAULT NULL,
+      action VARCHAR(60) NOT NULL,
+      target VARCHAR(180) DEFAULT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp()
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token VARCHAR(64) NOT NULL PRIMARY KEY,
+      user_id INT(11) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      expires_at DATETIME NOT NULL,
+      KEY idx_sessions_user (user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   `);
   await pool.execute(`
@@ -358,22 +404,37 @@ const getBearerToken = (req) => {
   return auth.slice(7).trim();
 };
 
-const getSessionUserId = (req) => {
+// Sessions are persisted in the DB so they survive API restarts / redeploys.
+const SESSION_TTL_DAYS = 30;
+
+const getSessionUserId = async (req) => {
   const token = getBearerToken(req);
-  if (!token || !sessions.has(token)) return null;
-  return sessions.get(token);
+  if (!token) return null;
+  const [[row]] = await pool.query(
+    'SELECT user_id FROM sessions WHERE token = ? AND expires_at > NOW()',
+    [token]
+  );
+  return row ? row.user_id : null;
 };
 
-const createSession = (userId) => {
+const createSession = async (userId) => {
   const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, userId);
+  await pool.execute(
+    'INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? DAY))',
+    [token, userId, SESSION_TTL_DAYS]
+  );
   return token;
+};
+
+const deleteSession = async (req) => {
+  const token = getBearerToken(req);
+  if (token) await pool.execute('DELETE FROM sessions WHERE token = ?', [token]);
 };
 
 // ── Auth middleware ─────────────────────────────────────────
 // Populates req.userId for any logged-in caller; 401 otherwise.
-const requireAuth = (req, res, next) => {
-  const userId = getSessionUserId(req);
+const requireAuth = async (req, res, next) => {
+  const userId = await getSessionUserId(req);
   if (!userId) { res.status(401).json({ success: false, error: 'Non authentifie' }); return; }
   req.userId = userId;
   next();
@@ -381,7 +442,7 @@ const requireAuth = (req, res, next) => {
 
 // Populates req.user with the full admin row; 401/403 otherwise.
 const requireAdmin = async (req, res, next) => {
-  const userId = getSessionUserId(req);
+  const userId = await getSessionUserId(req);
   const user = userId ? await getUserById(userId) : null;
   if (!user) { res.status(401).json({ success: false, error: 'Non authentifie' }); return; }
   if (!user.is_admin) { res.status(403).json({ success: false, error: 'Acces reserve aux administrateurs' }); return; }
@@ -432,7 +493,7 @@ app.post('/auth/register', async (req, res) => {
   );
 
   const user = await getUserById(insertResult.insertId);
-  const token = createSession(user.id);
+  const token = await createSession(user.id);
   res.status(201).json({ success: true, user: sanitizeUser(user), token });
 });
 
@@ -455,27 +516,20 @@ app.post('/auth/login', async (req, res) => {
     return res.status(403).json({ success: false, error: 'Ce compte a été banni.' });
   }
 
-  const token = createSession(user.id);
+  const token = await createSession(user.id);
   res.json({ success: true, user: sanitizeUser(user), token });
 });
 
 app.get('/auth/me', async (req, res) => {
-  const token = getBearerToken(req);
-  if (!token || !sessions.has(token)) {
-    return res.json({ success: true });
-  }
-  const userId = sessions.get(token);
+  const userId = await getSessionUserId(req);
+  if (!userId) return res.json({ success: true });
   const user = await getUserById(userId);
-  if (!user) {
-    sessions.delete(token);
-    return res.json({ success: true });
-  }
+  if (!user) return res.json({ success: true });
   res.json({ success: true, user: sanitizeUser(user) });
 });
 
-app.post('/auth/logout', (req, res) => {
-  const token = getBearerToken(req);
-  if (token) sessions.delete(token);
+app.post('/auth/logout', async (req, res) => {
+  await deleteSession(req);
   res.json({ success: true });
 });
 
@@ -797,6 +851,18 @@ const getMatchHistory = async (userId, limit = 20) => {
   }));
 };
 
+// Record an admin action in the audit trail (best-effort).
+const logAudit = async (adminUser, action, target = null) => {
+  try {
+    await pool.execute(
+      'INSERT INTO audit_log (admin_id, admin_username, action, target) VALUES (?, ?, ?, ?)',
+      [adminUser?.id ?? null, adminUser?.username ?? null, action, target]
+    );
+  } catch (err) {
+    console.error('audit log failed:', err);
+  }
+};
+
 // Insert an in-app notification (best-effort; never breaks the triggering action).
 const pushNotification = async (userId, type, message, link = null) => {
   try {
@@ -804,6 +870,8 @@ const pushNotification = async (userId, type, message, link = null) => {
       'INSERT INTO notifications (user_id, type, message, link) VALUES (?, ?, ?, ?)',
       [userId, type, message, link]
     );
+    // Nudge the recipient's open tabs so the bell updates instantly.
+    wsSendToUser(userId, { type: 'notification', message });
   } catch (err) {
     console.error('notification insert failed:', err);
   }
@@ -813,6 +881,11 @@ const pushNotification = async (userId, type, message, link = null) => {
 const teamMemberIds = async (teamId) => {
   const [rows] = await pool.query('SELECT user_id FROM team_members WHERE team_id = ?', [teamId]);
   return rows.map(r => r.user_id);
+};
+
+const teamMemberCount = async (teamId) => {
+  const [[{ cnt }]] = await pool.query('SELECT COUNT(*) AS cnt FROM team_members WHERE team_id = ?', [teamId]);
+  return Number(cnt);
 };
 
 app.get('/riot/player/:name/:tag', async (req, res) => {
@@ -1137,6 +1210,12 @@ app.put('/admin/users/:id', requireAdmin, async (req, res) => {
     await pool.execute(`UPDATE users SET ${setClauses} WHERE id = ?`, [...Object.values(updates), targetId]);
   }
   const updated = await getUserById(targetId);
+  const acts = [];
+  if (updates.is_admin !== undefined) acts.push(updates.is_admin ? 'promu admin' : 'rétrogradé');
+  if (updates.banned !== undefined) acts.push(updates.banned ? 'banni' : 'débanni');
+  if (updates.username !== undefined || updates.email !== undefined) acts.push('profil modifié');
+  if (updates.show_in_lfg !== undefined) acts.push('LFG modifié');
+  if (acts.length) await logAudit(req.user, `Membre ${acts.join(', ')}`, `${target.username} (#${targetId})`);
   res.json({ success: true, user: sanitizeUser(updated) });
 });
 
@@ -1156,6 +1235,7 @@ app.delete('/admin/users/:id', requireAdmin, async (req, res) => {
   } catch {
     return res.status(409).json({ success: false, error: 'Suppression impossible : cet utilisateur a des donnees liees (commandes).' });
   }
+  await logAudit(req.user, 'Membre supprimé', `${target.username} (#${targetId})`);
   res.json({ success: true });
 });
 
@@ -1172,6 +1252,7 @@ app.post('/admin/products', requireAdmin, async (req, res) => {
     'INSERT INTO products (name, price, category, image_url, stock_quantity) VALUES (?, ?, ?, ?, ?)',
     [name, Number(body.price) || 0, String(body.category || 'ACCESSOIRES'), String(body.image_url || ''), Number(body.stock_quantity) || 0]
   );
+  await logAudit(req.user, 'Produit créé', `${name} (#${result.insertId})`);
   res.status(201).json({ success: true, id: result.insertId });
 });
 
@@ -1196,11 +1277,13 @@ app.put('/admin/products/:id', requireAdmin, async (req, res) => {
 
 app.delete('/admin/products/:id', requireAdmin, async (req, res) => {
   const id = Number(req.params.id);
+  const [[existing]] = await pool.query('SELECT name FROM products WHERE id = ?', [id]);
   try {
     await pool.execute('DELETE FROM products WHERE id = ?', [id]);
   } catch {
     return res.status(409).json({ success: false, error: 'Suppression impossible : ce produit figure dans des commandes.' });
   }
+  await logAudit(req.user, 'Produit supprimé', `${existing?.name || ''} (#${id})`);
   res.json({ success: true });
 });
 
@@ -1221,11 +1304,13 @@ app.post('/admin/discord-servers', requireAdmin, async (req, res) => {
     'INSERT INTO discord_servers (name, description, invite_url, members, tag, featured) VALUES (?, ?, ?, ?, ?, ?)',
     [name, String(body.description || '').trim() || null, invite, String(body.members || '').trim() || null, String(body.tag || '').trim() || null, body.featured ? 1 : 0]
   );
+  await logAudit(req.user, 'Serveur Discord ajouté', name);
   res.status(201).json({ success: true, id: result.insertId });
 });
 
 app.delete('/admin/discord-servers/:id', requireAdmin, async (req, res) => {
   await pool.execute('DELETE FROM discord_servers WHERE id = ?', [Number(req.params.id)]);
+  await logAudit(req.user, 'Serveur Discord retiré', `#${Number(req.params.id)}`);
   res.json({ success: true });
 });
 
@@ -1255,6 +1340,7 @@ app.put('/admin/orders/:id', requireAdmin, async (req, res) => {
   const status = ['Pending', 'Paid', 'Shipped', 'Cancelled'].includes(body.status) ? body.status : null;
   if (!status) { return res.status(400).json({ success: false, error: 'Statut invalide' }); }
   await pool.execute('UPDATE orders SET status = ? WHERE id = ?', [status, id]);
+  await logAudit(req.user, 'Statut commande modifié', `#${id} → ${status}`);
   res.json({ success: true });
 });
 
@@ -1274,6 +1360,7 @@ app.post('/admin/promo-codes', requireAdmin, async (req, res) => {
   }
   try {
     const [r] = await pool.execute('INSERT INTO promo_codes (code, percent, active) VALUES (?, ?, ?)', [code, Math.round(percent), body.active === false ? 0 : 1]);
+    await logAudit(req.user, 'Code promo créé', `${code} (−${Math.round(percent)}%)`);
     res.status(201).json({ success: true, id: r.insertId });
   } catch {
     res.status(409).json({ success: false, error: 'Ce code existe déjà' });
@@ -1291,19 +1378,74 @@ app.put('/admin/promo-codes/:id', requireAdmin, async (req, res) => {
   if (Object.keys(updates).length > 0) {
     const set = Object.keys(updates).map(k => `${k} = ?`).join(', ');
     await pool.execute(`UPDATE promo_codes SET ${set} WHERE id = ?`, [...Object.values(updates), id]);
+    if (updates.active !== undefined) await logAudit(req.user, `Code promo ${updates.active ? 'activé' : 'désactivé'}`, existing.code);
   }
   res.json({ success: true });
 });
 
 app.delete('/admin/promo-codes/:id', requireAdmin, async (req, res) => {
+  const [[existing]] = await pool.query('SELECT code FROM promo_codes WHERE id = ?', [Number(req.params.id)]);
   await pool.execute('DELETE FROM promo_codes WHERE id = ?', [Number(req.params.id)]);
+  await logAudit(req.user, 'Code promo supprimé', existing?.code || `#${Number(req.params.id)}`);
   res.json({ success: true });
+});
+
+// Recent admin actions (audit trail).
+app.get('/admin/audit-log', requireAdmin, async (req, res) => {
+  const [rows] = await pool.query(
+    'SELECT id, admin_username, action, target, created_at FROM audit_log ORDER BY id DESC LIMIT 100'
+  );
+  res.json({ success: true, entries: rows.map(r => ({ id: r.id, admin: r.admin_username, action: r.action, target: r.target || null, createdAt: r.created_at })) });
+});
+
+// ── Admin team management (view rosters, add/remove members, 5-player cap) ──
+app.get('/admin/teams', requireAdmin, async (req, res) => {
+  const [rows] = await pool.query('SELECT id FROM teams ORDER BY id DESC');
+  const teams = [];
+  for (const r of rows) teams.push(await teamWithMembers(r.id));
+  res.json({ success: true, teams: teams.filter(Boolean) });
+});
+
+app.post('/admin/teams/:id/members', requireAdmin, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+
+  if (await teamMemberCount(teamId) >= TEAM_MAX_MEMBERS) {
+    return res.status(400).json({ success: false, error: `Une équipe ne peut pas dépasser ${TEAM_MAX_MEMBERS} joueurs` });
+  }
+  const username = String((req.body || {}).username || '').trim();
+  if (!username) return res.status(400).json({ success: false, error: 'Pseudo requis' });
+  const [[u]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
+  if (!u) return res.status(404).json({ success: false, error: 'Aucun joueur avec ce pseudo' });
+
+  try {
+    await pool.execute('INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)', [teamId, u.id, 'member']);
+  } catch {
+    return res.status(409).json({ success: false, error: 'Ce joueur est déjà dans l’équipe' });
+  }
+  await pushNotification(u.id, 'team', `Tu as été ajouté à l’équipe ${team.name}`);
+  await logAudit(req.user, 'Joueur ajouté à une équipe', `${username} → ${team.name}`);
+  res.status(201).json({ success: true, team: await teamWithMembers(teamId) });
+});
+
+app.delete('/admin/teams/:id/members/:userId', requireAdmin, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (targetUserId === team.owner_id) {
+    return res.status(400).json({ success: false, error: 'Impossible de retirer le capitaine (supprimez l’équipe à la place)' });
+  }
+  await pool.execute('DELETE FROM team_members WHERE team_id = ? AND user_id = ?', [teamId, targetUserId]);
+  await logAudit(req.user, 'Joueur retiré d’une équipe', `#${targetUserId} ← ${team.name}`);
+  res.json({ success: true, team: await teamWithMembers(teamId) });
 });
 
 // ════════════════════════════════════════════════════════
 //  TEAMS
 // ════════════════════════════════════════════════════════
-const teamWithMembers = async (teamId) => {
+const teamWithMembers = async (teamId, includeRequests = false) => {
   const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
   if (!team) return null;
   const [members] = await pool.query(
@@ -1312,6 +1454,15 @@ const teamWithMembers = async (teamId) => {
      WHERE tm.team_id = ? ORDER BY (tm.role = 'owner') DESC, tm.joined_at ASC`,
     [teamId]
   );
+  let requests = [];
+  if (includeRequests) {
+    const [reqRows] = await pool.query(
+      `SELECT r.user_id, u.username, u.rank_label FROM team_requests r JOIN users u ON u.id = r.user_id
+       WHERE r.team_id = ? AND r.status = 'pending' ORDER BY r.created_at ASC`,
+      [teamId]
+    );
+    requests = reqRows.map(r => ({ userId: r.user_id, username: r.username, rankLabel: r.rank_label || null }));
+  }
   return {
     id: team.id,
     name: team.name,
@@ -1324,6 +1475,7 @@ const teamWithMembers = async (teamId) => {
       userId: m.user_id, username: m.username, role: m.role,
       avatarUrl: m.avatar_url || null, rankLabel: m.rank_label || null,
     })),
+    requests,
   };
 };
 
@@ -1354,7 +1506,7 @@ app.get('/teams/mine', requireAuth, async (req, res) => {
     [req.userId]
   );
   const teams = [];
-  for (const r of rows) teams.push(await teamWithMembers(r.team_id));
+  for (const r of rows) teams.push(await teamWithMembers(r.team_id, true));
   res.json({ success: true, teams: teams.filter(Boolean) });
 });
 
@@ -1380,6 +1532,61 @@ app.get('/teams/:id', async (req, res) => {
   res.json({ success: true, team });
 });
 
+// A player asks to join a team — notifies the captain.
+app.post('/teams/:id/request', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+
+  const [[member]] = await pool.query('SELECT 1 AS x FROM team_members WHERE team_id = ? AND user_id = ?', [teamId, req.userId]);
+  if (member) return res.status(400).json({ success: false, error: 'Tu fais déjà partie de cette équipe' });
+
+  try {
+    await pool.execute('INSERT INTO team_requests (team_id, user_id, status) VALUES (?, ?, ?)', [teamId, req.userId, 'pending']);
+  } catch {
+    // Existing row → re-open it as pending (e.g. after a previous decline).
+    await pool.execute("UPDATE team_requests SET status = 'pending', created_at = NOW() WHERE team_id = ? AND user_id = ?", [teamId, req.userId]);
+  }
+  const me = await getUserById(req.userId);
+  await pushNotification(team.owner_id, 'team', `${me?.username || 'Un joueur'} souhaite rejoindre ${team.name}`);
+  res.status(201).json({ success: true });
+});
+
+// Captain accepts a pending request → the player joins the team.
+app.post('/teams/:id/requests/:userId/accept', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut accepter les demandes' });
+
+  const [[pending]] = await pool.query("SELECT 1 AS x FROM team_requests WHERE team_id = ? AND user_id = ? AND status = 'pending'", [teamId, targetUserId]);
+  if (!pending) return res.status(404).json({ success: false, error: 'Demande introuvable' });
+
+  if (await teamMemberCount(teamId) >= TEAM_MAX_MEMBERS) {
+    return res.status(400).json({ success: false, error: `L’équipe est complète (${TEAM_MAX_MEMBERS} joueurs max)` });
+  }
+  try {
+    await pool.execute('INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)', [teamId, targetUserId, 'member']);
+  } catch { /* already a member */ }
+  await pool.execute('DELETE FROM team_requests WHERE team_id = ? AND user_id = ?', [teamId, targetUserId]);
+  await pushNotification(targetUserId, 'team', `Ta demande pour rejoindre ${team.name} a été acceptée ✓`);
+  res.json({ success: true, team: await teamWithMembers(teamId, true) });
+});
+
+// Captain declines a pending request.
+app.post('/teams/:id/requests/:userId/decline', requireAuth, async (req, res) => {
+  const teamId = Number(req.params.id);
+  const targetUserId = Number(req.params.userId);
+  const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
+  if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
+  if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut refuser les demandes' });
+
+  await pool.execute("UPDATE team_requests SET status = 'declined' WHERE team_id = ? AND user_id = ?", [teamId, targetUserId]);
+  await pushNotification(targetUserId, 'team', `Ta demande pour rejoindre ${team.name} a été refusée`);
+  res.json({ success: true, team: await teamWithMembers(teamId, true) });
+});
+
 // Owner adds a member by username.
 app.post('/teams/:id/members', requireAuth, async (req, res) => {
   const teamId = Number(req.params.id);
@@ -1387,6 +1594,9 @@ app.post('/teams/:id/members', requireAuth, async (req, res) => {
   if (!team) return res.status(404).json({ success: false, error: 'Équipe introuvable' });
   if (team.owner_id !== req.userId) return res.status(403).json({ success: false, error: 'Seul le capitaine peut ajouter des membres' });
 
+  if (await teamMemberCount(teamId) >= TEAM_MAX_MEMBERS) {
+    return res.status(400).json({ success: false, error: `Une équipe ne peut pas dépasser ${TEAM_MAX_MEMBERS} joueurs` });
+  }
   const username = String((req.body || {}).username || '').trim();
   if (!username) return res.status(400).json({ success: false, error: 'Pseudo requis' });
   const [[u]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
@@ -1578,7 +1788,9 @@ app.post('/tournaments/:id/register', requireAuth, async (req, res) => {
   for (const uid of await teamMemberIds(teamId)) {
     await pushNotification(uid, 'tournament', `${team.name} est inscrite à « ${t.name} »`);
   }
-  res.status(201).json({ success: true, tournament: await tournamentDetail(tournamentId) });
+  const detail = await tournamentDetail(tournamentId);
+  wsBroadcast({ type: 'tournament', tournamentId, tournament: detail });
+  res.status(201).json({ success: true, tournament: detail });
 });
 
 // Withdraw a team while registration is still open.
@@ -1593,7 +1805,9 @@ app.delete('/tournaments/:id/register/:teamId', requireAuth, async (req, res) =>
     return res.status(403).json({ success: false, error: 'Action non autorisée' });
   }
   await pool.execute('DELETE FROM tournament_registrations WHERE tournament_id = ? AND team_id = ?', [tournamentId, teamId]);
-  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+  const detail = await tournamentDetail(tournamentId);
+  wsBroadcast({ type: 'tournament', tournamentId, tournament: detail });
+  res.json({ success: true, tournament: detail });
 });
 
 // Lock registration and generate the bracket (organizer only).
@@ -1614,7 +1828,9 @@ app.post('/tournaments/:id/start', requireAuth, async (req, res) => {
       await pushNotification(uid, 'tournament', `Le tournoi « ${t.name} » a commencé — bonne chance !`);
     }
   }
-  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+  const detail = await tournamentDetail(tournamentId);
+  wsBroadcast({ type: 'tournament', tournamentId, tournament: detail });
+  res.json({ success: true, tournament: detail });
 });
 
 // Report a match score (organizer only) — winner advances automatically.
@@ -1641,7 +1857,9 @@ app.put('/tournaments/:id/matches/:matchId', requireAuth, async (req, res) => {
   const winnerId = score1 > score2 ? m.team1_id : m.team2_id;
   await pool.execute('UPDATE tournament_matches SET score1 = ?, score2 = ? WHERE id = ?', [score1, score2, matchId]);
   await advanceWinner(tournamentId, m, winnerId);
-  res.json({ success: true, tournament: await tournamentDetail(tournamentId) });
+  const detail = await tournamentDetail(tournamentId);
+  wsBroadcast({ type: 'tournament', tournamentId, tournament: detail });
+  res.json({ success: true, tournament: detail });
 });
 
 // ── Fallbacks ───────────────────────────────────────────────
@@ -1658,9 +1876,45 @@ app.use((err, req, res, next) => {
 });
 
 initDb().then(() => {
-  app.listen(API_PORT, () => {
+  const server = app.listen(API_PORT, () => {
     console.log(`Local API running on http://localhost:${API_PORT}`);
   });
+
+  // WebSocket server on /ws — the session token (query param) is verified at the
+  // handshake, so unauthenticated clients are rejected before the upgrade completes.
+  const wss = new WebSocketServer({
+    server,
+    path: '/ws',
+    verifyClient: (info, cb) => {
+      (async () => {
+        try {
+          const url = new URL(info.req.url || '/', `http://${info.req.headers.host}`);
+          const token = url.searchParams.get('token');
+          const [[row]] = token
+            ? await pool.query('SELECT user_id FROM sessions WHERE token = ? AND expires_at > NOW()', [token])
+            : [[]];
+          if (row) { info.req.userId = row.user_id; cb(true); }
+          else cb(false, 401, 'Unauthorized');
+        } catch (err) {
+          console.error('ws verify error:', err);
+          cb(false, 500, 'Server error');
+        }
+      })();
+    },
+  });
+  wss.on('connection', (ws, req) => {
+    const userId = req.userId;
+    if (!userId) { ws.close(); return; }
+    if (!wsClients.has(userId)) wsClients.set(userId, new Set());
+    wsClients.get(userId).add(ws);
+    ws.send(JSON.stringify({ type: 'connected' }));
+    ws.on('close', () => {
+      const set = wsClients.get(userId);
+      if (set) { set.delete(ws); if (!set.size) wsClients.delete(userId); }
+    });
+    ws.on('error', () => { try { ws.close(); } catch { /* ignore */ } });
+  });
+  console.log(`WebSocket server ready on ws://localhost:${API_PORT}/ws`);
 }).catch(err => {
   console.error('DB init failed:', err);
   process.exit(1);
