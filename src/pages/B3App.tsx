@@ -311,6 +311,23 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [promoError, setPromoError] = useState<string | null>(null);
   const [promoBusy, setPromoBusy] = useState(false);
   const [payFields, setPayFields] = useState({ card: '', exp: '', cvc: '', email: '', coin: 'BTC' });
+  // Receipt snapshot — frozen at checkout so the recap modal survives the cart reset.
+  const [receipt, setReceipt] = useState<{
+    id: number; items: CartLine[]; subtotal: number; discount: number; total: number;
+    count: number; method: string; promoCode: string | null; date: Date;
+  } | null>(null);
+  // Order picked from the profile history to inspect in a detail modal.
+  const [orderDetail, setOrderDetail] = useState<UserOrder | null>(null);
+  // Active promo codes advertised in the top status ticker.
+  const [activePromos, setActivePromos] = useState<Array<{ code: string; percent: number }>>([]);
+
+  useEffect(() => {
+    let alive = true;
+    platformApi.getActivePromos()
+      .then(r => alive && setActivePromos(r.success && r.promos ? r.promos : []))
+      .catch(() => alive && setActivePromos([]));
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -361,6 +378,9 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     platformApi.getDiscordServers().then(r => setDiscordServers(r.success && r.servers ? r.servers : []));
   const reloadPromos = () =>
     platformApi.adminGetPromoCodes().then(r => setPromoCodes(r.success && r.codes ? r.codes : []));
+  // Keep the public ticker in sync after admin promo changes.
+  const reloadActivePromos = () =>
+    platformApi.getActivePromos().then(r => setActivePromos(r.success && r.promos ? r.promos : []));
   const reloadAudit = () =>
     platformApi.adminGetAuditLog().then(r => setAuditLog(r.success && r.entries ? r.entries : []));
   const reloadAdminTeams = () =>
@@ -491,12 +511,16 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       if (!url) return;
       socket = new WebSocket(url);
       socket.onmessage = (ev) => {
-        let msg: { type?: string; tournamentId?: number; tournament?: OwnTournament };
+        let msg: { type?: string; tournamentId?: number; tournament?: OwnTournament; entry?: AuditEntry };
         try { msg = JSON.parse(ev.data as string); } catch { return; }
         if (msg.type === 'notification') {
           platformApi.getNotifications(Number(user.id)).then(r => {
             if (r.success) { setNotifs(r.notifications ?? []); setUnread(r.unread ?? 0); }
           }).catch(() => undefined);
+        } else if (msg.type === 'audit' && msg.entry) {
+          // Live audit trail — prepend the new entry if the journal is already loaded.
+          const entry = msg.entry;
+          setAuditLog(prev => (prev ? [entry, ...prev.filter(e => e.id !== entry.id)].slice(0, 100) : prev));
         } else if (msg.type === 'tournament' && msg.tournament) {
           const t = msg.tournament;
           // Update the open detail view live, and patch the list row.
@@ -1951,7 +1975,13 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
         })
           .then(r => {
             if (r.success) {
-              notify(`Paiement ${payMethod} accepté — commande #${r.orderId ?? ''} ✓`);
+              setReceipt({
+                id: r.orderId ?? 0,
+                items, subtotal, discount, total, count,
+                method: payMethod,
+                promoCode: promo?.code ?? null,
+                date: new Date(),
+              });
               onClearCart?.();
               setPromo(null); setPromoInput(''); setPayFields({ card: '', exp: '', cvc: '', email: '', coin: 'BTC' });
               reloadShop();
@@ -2407,7 +2437,8 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
               ? <p style={{ fontFamily: MONO, fontSize: 12, color: C.muted }}>Aucune commande pour l’instant. Direction le Shop !</p>
               : <div style={{ borderTop: `2px solid ${C.ink}` }}>
                   {myOrders.map(o => (
-                    <div key={o.id} style={{ padding: '16px 4px', borderBottom: `1px solid ${C.line}` }}>
+                    <button key={o.id} onClick={() => setOrderDetail(o)} className="b3-row"
+                      style={{ display: 'block', width: '100%', textAlign: 'left', padding: '16px 8px', border: 0, borderBottom: `1px solid ${C.line}`, background: 'transparent', cursor: 'pointer' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
                         <span style={{ fontFamily: DISP, fontSize: 20 }}>#{o.id}</span>
                         <span style={{ fontFamily: MONO, fontSize: 11, color: C.muted }}>{new Date(o.created_at).toLocaleDateString('fr-FR')} · {o.payment_method}</span>
@@ -2415,12 +2446,15 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
                         <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', padding: '5px 10px', border: `1.5px solid ${ORDER_STATUS_COLOR[o.status] || C.ink2}`, color: ORDER_STATUS_COLOR[o.status] || C.ink2 }}>{o.status.toUpperCase()}</span>
                         <span style={{ fontFamily: MONO, fontSize: 18, fontWeight: 700, color: C.red, width: 90, textAlign: 'right' }}>{eur(o.total_ttc)}</span>
                       </div>
-                      {o.items.length > 0 && (
-                        <p style={{ margin: '8px 0 0', fontFamily: MONO, fontSize: 11, color: C.ink2 }}>
-                          {o.items.map(it => `${it.quantity}× ${it.name}`).join('  ·  ')}
-                        </p>
-                      )}
-                    </div>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 8 }}>
+                        {o.items.length > 0
+                          ? <p style={{ margin: 0, fontFamily: MONO, fontSize: 11, color: C.ink2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {o.items.map(it => `${it.quantity}× ${it.name}`).join('  ·  ')}
+                            </p>
+                          : <span />}
+                        <span style={{ flex: 'none', fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: C.red }}>DÉTAIL →</span>
+                      </div>
+                    </button>
                   ))}
                 </div>}
         </section>
@@ -2461,7 +2495,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     const orders = overview.recentOrders ?? [];
 
     // ── Member actions ───────────────────────────────────────
-    const afterUser = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) reloadAdminUsers().catch(() => undefined); };
+    const afterUser = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) { reloadAdminUsers().catch(() => undefined); reloadAudit().catch(() => undefined); } };
     const setUser = (id: number, updates: Parameters<typeof platformApi.adminUpdateUser>[1], okMsg: string) => {
       setBusyId(id);
       platformApi.adminUpdateUser(id, updates)
@@ -2481,7 +2515,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     // ── Merch actions ────────────────────────────────────────
     const afterProd = (msg: string, ok: boolean) => {
       notify(ok ? msg : (msg || 'Échec'));
-      if (ok) { reloadAdminProducts().catch(() => undefined); reloadShop(); }
+      if (ok) { reloadAdminProducts().catch(() => undefined); reloadShop(); reloadAudit().catch(() => undefined); }
     };
     const addProduct = () => {
       if (!prodForm.name.trim()) { notify('Le nom du produit est requis'); return; }
@@ -2655,7 +2689,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     );
 
     // ── Discord actions ──────────────────────────────────────
-    const afterDiscord = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) reloadDiscord().catch(() => undefined); };
+    const afterDiscord = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) { reloadDiscord().catch(() => undefined); reloadAudit().catch(() => undefined); } };
     const addDiscord = () => {
       if (!discordForm.name.trim() || !discordForm.inviteUrl.trim()) { notify('Nom et lien d’invitation requis'); return; }
       setBusyId(-2);
@@ -2721,7 +2755,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     );
 
     // ── Promo code actions ───────────────────────────────────
-    const afterPromo = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) reloadPromos().catch(() => undefined); };
+    const afterPromo = (msg: string, ok: boolean) => { notify(ok ? msg : (msg || 'Échec')); if (ok) { reloadPromos().catch(() => undefined); reloadActivePromos().catch(() => undefined); reloadAudit().catch(() => undefined); } };
     const addPromo = () => {
       const code = promoCodeForm.code.trim().toUpperCase();
       const percent = Number(promoCodeForm.percent);
@@ -2788,6 +2822,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     const afterAdminTeam = (team: Team | undefined, okMsg: string, ok: boolean, err?: string) => {
       notify(ok ? okMsg : (err || 'Échec'));
       if (ok && team) setAdminTeams(prev => prev ? prev.map(t => t.id === team.id ? team : t) : prev);
+      if (ok) reloadAudit().catch(() => undefined);
     };
     const addAdminMember = (teamId: number) => {
       const username = adminTeamInput.trim();
@@ -2922,6 +2957,152 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
         </div>
       )}
 
+      {/* RECEIPT — order confirmation modal */}
+      {receipt && (
+        <div onClick={() => setReceipt(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(20,18,16,.72)' }}>
+          <div onClick={ev => ev.stopPropagation()} role="dialog" aria-modal="true"
+            style={{ width: '100%', maxWidth: 460, maxHeight: '88vh', overflowY: 'auto', background: C.paper, border: `2px solid ${C.ink}`, boxShadow: '10px 10px 0 rgba(20,18,16,.18)' }}>
+
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '20px 24px', borderBottom: `2px solid ${C.ink}` }}>
+              <span style={{ height: 40, width: 40, flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.green, color: '#fff', fontSize: 22, fontWeight: 800 }}>✓</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ margin: 0, fontFamily: DISP, fontSize: 24, letterSpacing: '.01em', textTransform: 'uppercase', lineHeight: 1 }}>Commande confirmée</p>
+                <p style={{ margin: '5px 0 0', fontFamily: MONO, fontSize: 10.5, letterSpacing: '.08em', color: C.muted }}>// PAIEMENT ACCEPTÉ — MERCI</p>
+              </div>
+              <button onClick={() => setReceipt(null)} title="Fermer" style={{ height: 30, width: 30, flex: 'none', border: `1.5px solid ${C.ink}`, background: C.paper, fontFamily: MONO, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>×</button>
+            </div>
+
+            {/* Meta */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)' }}>
+              {[
+                { k: 'Commande', v: `#${receipt.id}` },
+                { k: 'Date', v: receipt.date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) },
+                { k: 'Paiement', v: receipt.method === 'Card' ? 'Carte' : receipt.method },
+              ].map((f, i) => (
+                <div key={f.k} style={{ padding: '13px 16px', borderBottom: `1px solid ${C.line}`, borderRight: i < 2 ? `1px solid ${C.line}` : 0 }}>
+                  <p style={{ margin: 0, fontFamily: MONO, fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: C.muted }}>{f.k}</p>
+                  <p style={{ margin: '5px 0 0', fontFamily: UI, fontSize: 14, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.v}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Items */}
+            <div style={{ padding: '8px 24px 4px' }}>
+              <p style={{ margin: '12px 0 8px', fontFamily: MONO, fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: C.muted }}>Articles · {receipt.count}</p>
+              {receipt.items.map((it, i) => (
+                <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: i < receipt.items.length - 1 ? `1px solid ${C.line}` : 0 }}>
+                  <span style={{ height: 40, width: 40, flex: 'none', background: C.paper3, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {it.img ? <img src={it.img} alt={it.name} style={{ height: '100%', width: '100%', objectFit: 'cover' }} /> : <span style={{ fontFamily: MONO, fontSize: 8, color: C.muted }}>//</span>}
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p style={{ margin: 0, fontFamily: UI, fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.name}>{it.name}</p>
+                    <p style={{ margin: '3px 0 0', fontFamily: MONO, fontSize: 10.5, color: C.muted }}>×{it.quantity}</p>
+                  </div>
+                  <span style={{ flex: 'none', fontFamily: MONO, fontSize: 13, fontWeight: 700, color: C.red }}>{eur(it.price * it.quantity)}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Totals */}
+            <div style={{ padding: '14px 24px', borderTop: `1px solid ${C.line}` }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 12, color: C.ink2 }}>
+                <span>Sous-total</span><span>{eur(receipt.subtotal)}</span>
+              </div>
+              {receipt.discount > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontFamily: MONO, fontSize: 12, color: C.green }}>
+                  <span>Remise{receipt.promoCode ? ` · ${receipt.promoCode}` : ''}</span><span>−{eur(receipt.discount)}</span>
+                </div>
+              )}
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: `2px solid ${C.ink}` }}>
+                <span style={{ fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase' }}>Total TTC</span>
+                <span style={{ fontFamily: DISP, fontSize: 30, lineHeight: 1, color: C.red }}>{eur(receipt.total)}</span>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: 12, padding: '4px 24px 24px' }}>
+              <button onClick={() => { setReceipt(null); setScreen('shop'); }}
+                style={{ flex: 1, padding: '13px 0', border: `1.5px solid ${C.ink}`, background: C.paper, fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.03em', textTransform: 'uppercase', cursor: 'pointer' }}>Continuer</button>
+              <button onClick={() => { setReceipt(null); setScreen('profile'); }} className="b3-btn-ink"
+                style={{ flex: 1, padding: '13px 0', border: 0, background: C.ink, color: C.paper, fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.03em', textTransform: 'uppercase', cursor: 'pointer' }}>Mes commandes</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ORDER DETAIL — picked from profile history */}
+      {orderDetail && (() => {
+        const o = orderDetail;
+        const sub = o.items.reduce((s, it) => s + it.price * it.quantity, 0);
+        const disc = Math.max(0, Math.round((sub - o.total_ttc) * 100) / 100);
+        const statusColor = ORDER_STATUS_COLOR[o.status] || C.ink2;
+        return (
+          <div onClick={() => setOrderDetail(null)}
+            style={{ position: 'fixed', inset: 0, zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: 'rgba(20,18,16,.72)' }}>
+            <div onClick={ev => ev.stopPropagation()} role="dialog" aria-modal="true"
+              style={{ width: '100%', maxWidth: 460, maxHeight: '88vh', overflowY: 'auto', background: C.paper, border: `2px solid ${C.ink}`, boxShadow: '10px 10px 0 rgba(20,18,16,.18)' }}>
+
+              {/* Header */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '20px 24px', borderBottom: `2px solid ${C.ink}` }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: 0, fontFamily: DISP, fontSize: 26, letterSpacing: '.01em', lineHeight: 1 }}>Commande #{o.id}</p>
+                  <p style={{ margin: '6px 0 0', fontFamily: MONO, fontSize: 10.5, letterSpacing: '.08em', color: C.muted }}>// DÉTAIL DE LA COMMANDE</p>
+                </div>
+                <button onClick={() => setOrderDetail(null)} title="Fermer" style={{ height: 30, width: 30, flex: 'none', border: `1.5px solid ${C.ink}`, background: C.paper, fontFamily: MONO, fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>×</button>
+              </div>
+
+              {/* Meta */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)' }}>
+                {[
+                  { k: 'Date', v: new Date(o.created_at).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) },
+                  { k: 'Paiement', v: o.payment_method === 'Card' ? 'Carte' : o.payment_method },
+                  { k: 'Statut', v: o.status.toUpperCase(), color: statusColor },
+                ].map((f, i) => (
+                  <div key={f.k} style={{ padding: '13px 16px', borderBottom: `1px solid ${C.line}`, borderRight: i < 2 ? `1px solid ${C.line}` : 0 }}>
+                    <p style={{ margin: 0, fontFamily: MONO, fontSize: 9, letterSpacing: '.14em', textTransform: 'uppercase', color: C.muted }}>{f.k}</p>
+                    <p style={{ margin: '5px 0 0', fontFamily: UI, fontSize: 14, fontWeight: 800, color: f.color || C.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.v}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Items */}
+              <div style={{ padding: '8px 24px 4px' }}>
+                <p style={{ margin: '12px 0 8px', fontFamily: MONO, fontSize: 10, letterSpacing: '.14em', textTransform: 'uppercase', color: C.muted }}>Articles · {o.items.reduce((s, it) => s + it.quantity, 0)}</p>
+                {o.items.length === 0
+                  ? <p style={{ margin: '0 0 8px', fontFamily: MONO, fontSize: 11, color: C.muted }}>Aucun article enregistré.</p>
+                  : o.items.map((it, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: i < o.items.length - 1 ? `1px solid ${C.line}` : 0 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <p style={{ margin: 0, fontFamily: UI, fontSize: 13.5, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.name}>{it.name}</p>
+                        <p style={{ margin: '3px 0 0', fontFamily: MONO, fontSize: 10.5, color: C.muted }}>{eur(it.price)} × {it.quantity}</p>
+                      </div>
+                      <span style={{ flex: 'none', fontFamily: MONO, fontSize: 13, fontWeight: 700, color: C.red }}>{eur(it.price * it.quantity)}</span>
+                    </div>
+                  ))}
+              </div>
+
+              {/* Totals */}
+              <div style={{ padding: '14px 24px 24px', borderTop: `1px solid ${C.line}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: MONO, fontSize: 12, color: C.ink2 }}>
+                  <span>Sous-total</span><span>{eur(sub)}</span>
+                </div>
+                {disc > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6, fontFamily: MONO, fontSize: 12, color: C.green }}>
+                    <span>Remise</span><span>−{eur(disc)}</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 12, paddingTop: 12, borderTop: `2px solid ${C.ink}` }}>
+                  <span style={{ fontFamily: UI, fontSize: 13, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase' }}>Total TTC</span>
+                  <span style={{ fontFamily: DISP, fontSize: 30, lineHeight: 1, color: C.red }}>{eur(o.total_ttc)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* COMMAND RAIL */}
       <header style={{ flex: 'none', display: 'flex', alignItems: 'stretch', height: 66, borderBottom: `2px solid ${C.ink}`, background: C.paper }}>
         <button onClick={() => setScreen('home')} style={{ display: 'flex', alignItems: 'center', gap: 13, padding: '0 22px', border: 0, borderRight: `2px solid ${C.ink}`, background: 'transparent', cursor: 'pointer' }}>
@@ -2990,6 +3171,11 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
         <span style={{ display: 'inline-block', animation: 'mq 28s linear infinite' }}>
           {Array(2).fill(0).map((_, i) => (
             <React.Fragment key={i}>
+              {activePromos.map(p => (
+                <React.Fragment key={p.code}>
+                  <span style={{ color: C.red, fontWeight: 700 }}>CODE PROMO {p.code} — −{p.percent}%</span>&nbsp;&nbsp;◆&nbsp;&nbsp;
+                </React.Fragment>
+              ))}
               VCT CHAMPIONS — GRANDE FINALE EN COURS&nbsp;&nbsp;◆&nbsp;&nbsp;PATCH 8.11 LIVE&nbsp;&nbsp;◆&nbsp;&nbsp;6 JOUEURS EN RECHERCHE D'ÉQUIPE&nbsp;&nbsp;◆&nbsp;&nbsp;B3 WINTER CUP — INSCRIPTIONS OUVERTES&nbsp;&nbsp;◆&nbsp;&nbsp;NOUVEAU MERCH DISPONIBLE&nbsp;&nbsp;◆&nbsp;&nbsp;
             </React.Fragment>
           ))}

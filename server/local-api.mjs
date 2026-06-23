@@ -28,6 +28,12 @@ const pool = mysql.createPool({
 // ── Realtime (WebSocket) registry ───────────────────────────
 // userId -> Set<ws>. Populated on connection, used to push live updates.
 const wsClients = new Map();
+// Subset of admin connections — used to broadcast the audit trail live.
+const adminClients = new Set();
+const wsBroadcastAdmins = (payload) => {
+  const msg = JSON.stringify(payload);
+  for (const ws of adminClients) { try { if (ws.readyState === 1) ws.send(msg); } catch { /* ignore */ } }
+};
 const wsSendToUser = (userId, payload) => {
   const set = wsClients.get(Number(userId));
   if (!set) return;
@@ -854,10 +860,21 @@ const getMatchHistory = async (userId, limit = 20) => {
 // Record an admin action in the audit trail (best-effort).
 const logAudit = async (adminUser, action, target = null) => {
   try {
-    await pool.execute(
+    const [result] = await pool.execute(
       'INSERT INTO audit_log (admin_id, admin_username, action, target) VALUES (?, ?, ?, ?)',
       [adminUser?.id ?? null, adminUser?.username ?? null, action, target]
     );
+    // Push the new entry live to every connected admin so journals stay in sync.
+    const [[row]] = await pool.query(
+      'SELECT id, admin_username, action, target, created_at FROM audit_log WHERE id = ?',
+      [result.insertId]
+    );
+    if (row) {
+      wsBroadcastAdmins({
+        type: 'audit',
+        entry: { id: row.id, admin: row.admin_username, action: row.action, target: row.target || null, createdAt: row.created_at },
+      });
+    }
   } catch (err) {
     console.error('audit log failed:', err);
   }
@@ -1086,6 +1103,12 @@ app.post('/promo/validate', async (req, res) => {
   res.json({ success: true, code: promo.code, percent: promo.percent });
 });
 
+// Public list of active promo codes — used by the home ticker to advertise deals.
+app.get('/promo/active', async (req, res) => {
+  const [rows] = await pool.query('SELECT code, percent FROM promo_codes WHERE active = 1 ORDER BY percent DESC');
+  res.json({ success: true, promos: rows.map(r => ({ code: r.code, percent: r.percent })) });
+});
+
 app.get('/products', async (req, res) => {
   const [rows] = await pool.query(
     'SELECT id, name, price, category, image_url, stock_quantity FROM products ORDER BY id ASC'
@@ -1272,6 +1295,7 @@ app.put('/admin/products/:id', requireAdmin, async (req, res) => {
       id,
     ]
   );
+  await logAudit(req.user, 'Produit modifié', `${existing.name} (#${id})`);
   res.json({ success: true });
 });
 
@@ -1891,9 +1915,14 @@ initDb().then(() => {
           const url = new URL(info.req.url || '/', `http://${info.req.headers.host}`);
           const token = url.searchParams.get('token');
           const [[row]] = token
-            ? await pool.query('SELECT user_id FROM sessions WHERE token = ? AND expires_at > NOW()', [token])
+            ? await pool.query(
+                `SELECT s.user_id, u.is_admin FROM sessions s
+                 JOIN users u ON u.id = s.user_id
+                 WHERE s.token = ? AND s.expires_at > NOW()`,
+                [token],
+              )
             : [[]];
-          if (row) { info.req.userId = row.user_id; cb(true); }
+          if (row) { info.req.userId = row.user_id; info.req.isAdmin = !!row.is_admin; cb(true); }
           else cb(false, 401, 'Unauthorized');
         } catch (err) {
           console.error('ws verify error:', err);
@@ -1907,10 +1936,12 @@ initDb().then(() => {
     if (!userId) { ws.close(); return; }
     if (!wsClients.has(userId)) wsClients.set(userId, new Set());
     wsClients.get(userId).add(ws);
+    if (req.isAdmin) adminClients.add(ws);
     ws.send(JSON.stringify({ type: 'connected' }));
     ws.on('close', () => {
       const set = wsClients.get(userId);
       if (set) { set.delete(ws); if (!set.size) wsClients.delete(userId); }
+      adminClients.delete(ws);
     });
     ws.on('error', () => { try { ws.close(); } catch { /* ignore */ } });
   });

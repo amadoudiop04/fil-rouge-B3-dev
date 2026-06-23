@@ -652,6 +652,11 @@ export const platformApi = {
     return r ?? { success: false, error: 'API indisponible' };
   },
 
+  async getActivePromos(): Promise<{ success: boolean; promos?: Array<{ code: string; percent: number }>; error?: string }> {
+    const r = await callApi<{ success: boolean; promos?: Array<{ code: string; percent: number }>; error?: string }>('/promo/active');
+    return r ?? { success: false, error: 'API indisponible' };
+  },
+
   // ── Notifications ───────────────────────────────────────────────────────────
   async getNotifications(userId: number): Promise<{ success: boolean; notifications?: AppNotification[]; unread?: number; error?: string }> {
     const r = await callApi<{ success: boolean; notifications?: AppNotification[]; unread?: number; error?: string }>(`/users/${userId}/notifications`);
