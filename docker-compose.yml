@@ -1,0 +1,65 @@
+# Lance toute la stack : MySQL + API Node + front Vite
+# Usage :  docker compose up --build
+# Puis ouvre http://localhost:5173
+#
+# Les variables (mots de passe, tokens) sont lues depuis le fichier .env
+# à la racine (copie .env.example -> .env et remplis-le).
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: b3-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_NAME:-b3_esport}
+    # Host 3307 → container 3306, to avoid clashing with any MySQL already on host:3306.
+    # api/web reach MySQL internally as mysql:3306 regardless of this host mapping.
+    ports:
+      - "3307:3306"
+    volumes:
+      - b3-db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: .
+    container_name: b3-api
+    restart: unless-stopped
+    command: node server/local-api.mjs
+    environment:
+      API_PORT: 3001
+      DB_HOST: mysql            # nom du service MySQL ci-dessus
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-b3_esport}
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      RIOT_API_KEY: ${RIOT_API_KEY:-}
+      RIOT_REGION: ${RIOT_REGION:-eu}
+      # Esports data comes from vlr.gg (proxy /esports/*) — no token needed.
+      # Override the upstream wrapper here if you self-host vlresports.
+      VLR_API_BASE: ${VLR_API_BASE:-https://vlr.orlandomm.net/api/v1}
+    ports:
+      - "3001:3001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  web:
+    build: .
+    container_name: b3-web
+    restart: unless-stopped
+    command: sh -c "npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      VITE_API_URL: http://localhost:3001
+      # Esports token no longer used client-side — it lives on the api service now.
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  b3-db-data:

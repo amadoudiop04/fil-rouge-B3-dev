@@ -45,12 +45,19 @@ export interface MatchWithUser {
   deaths: number;
   assists: number;
   played_at: string;
+  // Extra fields present on persisted Riot matches (optional for legacy/demo rows).
+  mode?: string;
+  headshotPct?: number;
+  avgDamage?: number;
+  roundsWon?: number;
+  roundsLost?: number;
 }
 
 export interface CreateOrderPayload {
   user_id: number;
   total_ttc: number;
   payment_method: 'Card' | 'PayPal' | 'Crypto';
+  promo_code?: string;
   items: Array<{
     product_id: number;
     quantity: number;
@@ -66,4 +73,52 @@ export interface OrderRecord {
   status: 'Pending' | 'Paid' | 'Shipped';
   created_at: string;
   items: CreateOrderPayload['items'];
+}
+
+export interface RiotAccount {
+  puuid: string;
+  region: string;
+  account_level: number;
+  name: string;
+  tag: string;
+  card?: {
+    small: string;
+    large: string;
+    wide: string;
+    id: string;
+  };
+  last_update?: string;
+}
+
+export interface RiotMMR {
+  current_data?: {
+    currenttier: number;
+    currenttierpatched: string;
+    ranking_in_tier: number;
+    mmr_change_to_last_game: number;
+    elo: number;
+    old: boolean;
+  };
+  highest_rank?: {
+    patched_tier: string;
+    tier: number;
+    season: string;
+  };
+}
+
+export interface RiotMatch {
+  matchId: string;
+  map: string;
+  mode: string;
+  date: string;
+  result: 'W' | 'L';
+  roundsWon: number;
+  roundsLost: number;
+  agent: string;
+  agentImage: string | null;
+  kills: number;
+  deaths: number;
+  assists: number;
+  headshotPct: number;
+  avgDamage: number;
 }

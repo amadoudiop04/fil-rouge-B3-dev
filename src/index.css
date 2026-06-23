@@ -1,11 +1,143 @@
 @import "tailwindcss";
 
-/* Hide scrollbar but keep functionality */
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
+/* ════════════════════════════════════════════════════════════
+   B3 ESPORT — Editorial / print design system
+   Cream paper · ink black · signal red · field green
+   Anton (display) · Archivo (UI) · JetBrains Mono (data)
+═══════════════════════════════════════════════════════════════ */
+:root {
+  --paper:  #e7e3d9;
+  --paper2: #dfdacd;
+  --paper3: #d2ccbc;
+  --ink:    #17140f;
+  --ink2:   #3a342a;
+  --muted:  #827a68;
+  --red:    #ff4233;
+  --green:  #1f7a52;
+  --line:   rgba(23,20,15,.16);
+  --line2:  rgba(23,20,15,.34);
+
+  --disp: 'Anton', sans-serif;
+  --ui:   'Archivo', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+
+  /* back-compat aliases so the auth screens keep rendering on the new palette */
+  --bg:      var(--paper);
+  --bg2:     var(--paper2);
+  --surface: var(--paper);
+  --card:    var(--paper);
+  --card2:   var(--paper2);
+  --raised:  var(--paper3);
+  --border:  var(--line);
+  --border2: var(--line2);
+  --violet:  var(--red);
+  --violet2: var(--red);
+  --accent:  var(--ink);
+  --accent2: var(--red);
+  --text1:   var(--ink);
+  --text2:   var(--ink2);
+  --text3:   var(--muted);
+  --amber:   var(--red);
+  --blue:    var(--ink2);
+
+  --font-body:    var(--ui);
+  --font-display: var(--disp);
+  --font-mono:    var(--mono);
 }
 
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
+/* ── Base ── */
+*, *::before, *::after { box-sizing: border-box; }
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-family: var(--ui);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
+#root {
+  background-color: var(--paper);
+  background-image: repeating-linear-gradient(0deg, rgba(23,20,15,.022) 0 1px, transparent 1px 5px);
+}
+
+/* ── Scrollbar ── */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--paper2); }
+::-webkit-scrollbar-thumb { background: var(--ink); }
+
+/* ── Fonts helpers ── */
+.font-display { font-family: var(--disp); }
+.font-mono    { font-family: var(--mono); }
+
+/* ── Marquee + scan reveal ── */
+@keyframes mq { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+@keyframes pageIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.page-enter { animation: pageIn 0.24s ease both; }
+
+/* ════ Editorial interaction helpers (used across the app shell) ════ */
+.b3-nav:hover     { background: var(--paper2) !important; }
+.b3-row:hover     { background: var(--paper2) !important; }
+.b3-link          { transition: color .15s; }
+.b3-link:hover    { color: var(--red) !important; }
+.b3-btn-ink       { background: var(--ink); color: var(--paper); border: 0; cursor: pointer; transition: background .15s; }
+.b3-btn-ink:hover { background: var(--red); }
+.b3-btn-ondark    { transition: background .15s, color .15s; }
+.b3-btn-ondark:hover { background: var(--paper) !important; color: var(--ink) !important; }
+.b3-panier:hover  { background: var(--red) !important; border-color: var(--red) !important; }
+
+/* ── Input (editorial: square, ink-ruled, mono) ── */
+.input {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  color: var(--ink);
+  font-family: var(--mono);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.input:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(255,66,51,0.12); }
+.input::placeholder { color: var(--muted); }
+
+/* ── Primary button (ink slab → red on hover) ── */
+.btn-primary {
+  background: var(--ink);
+  border: 0;
+  border-radius: 0;
+  color: var(--paper);
+  font-family: var(--ui);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+  cursor: pointer;
+}
+.btn-primary:hover    { background: var(--red); }
+.btn-primary:active   { transform: scale(0.98); }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-ghost {
+  background: transparent;
+  border: 2px solid var(--ink);
+  border-radius: 0;
+  color: var(--ink);
+  font-family: var(--ui);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
+}
+.btn-ghost:hover { background: var(--ink); color: var(--paper); }
+
+/* ── Autofill ── */
+input:-webkit-autofill, input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 50px var(--paper) inset;
+  -webkit-text-fill-color: var(--ink);
+  caret-color: var(--ink);
+}
+
+/* ── Focus ring ── */
+:focus-visible { outline: 2px solid var(--red); outline-offset: 2px; }

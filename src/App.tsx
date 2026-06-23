@@ -1,124 +1,76 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import './index.css';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AuthPage } from './middleware/AuthPage';
-import { Header } from './components/Header';
-import { Navigation } from './components/Navigation';
-import { Footer } from './components/Footer';
-import { HomePage } from './pages/HomePage';
-import { StatsPage } from './pages/statsPage';
-import { ProfilePage } from './pages/ProfilePage';
-import { SettingsPage } from './pages/SettingsPage';
-import TournamentPage from './pages/TournamentPage';
-import { PaymentPage } from './pages/PaymentPage';
-import { Product } from './components/ProductCard';
-import ShopPage from './pages/Shop';
-import PanierPage from './pages/PanierPage';
+import B3App from './pages/B3App';
 
-interface CartItem {
-  id: number;
-  img: string;
-  name: string;
-  price: number;
-  category: string;
-  stock_quantity: number;
-  quantity: number;
+export interface CartItem {
+  id: number; img: string; name: string; price: number;
+  category: string; stock_quantity: number; quantity: number;
 }
 
-const AppContent = () => {
+const Loader: React.FC = () => (
+  <div className="flex h-screen items-center justify-center">
+    <div className="flex flex-col items-center gap-5">
+      <span className="flex h-12 w-12 items-center justify-center font-display text-[24px] text-white"
+        style={{ background: 'var(--red)', clipPath: 'polygon(0 0,100% 0,100% 72%,82% 100%,0 100%)' }}>
+        B3
+      </span>
+      <span className="font-mono text-[11px] tracking-[0.2em] animate-pulse" style={{ color: 'var(--muted)' }}>
+        // CHARGEMENT…
+      </span>
+    </div>
+  </div>
+);
+
+const AppContent: React.FC = () => {
   const { user, logout, isLoading } = useAuth();
-  const [currentPage, setCurrentPage] = useState('home');
-  const [hasPlayedLoginSound, setHasPlayedLoginSound] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
 
-  const handleBuyProduct = (product: Product) => {
-    setSelectedProduct(product);
-    setCurrentPage('payment');
-  };
-
-  const handleCartUpdate = (items: CartItem[]) => {
-    setCartItems(items);
-  };
-
-  const handleCheckout = () => {
-    setCurrentPage('payment');
-  };
-
-  const handleClearCart = () => {
-    setCartItems([]);
-  };
-
-  useEffect(() => {
-    // Jouer un son de connexion
-    if (user && !hasPlayedLoginSound) {
-      const soundEnabled = window.localStorage.getItem('settings-sound');
-      if (soundEnabled === 'true' || soundEnabled === null) {
-        try {
-          const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const oscillator = audioContext.createOscillator();
-          const gainNode = audioContext.createGain();
-
-          oscillator.connect(gainNode);
-          gainNode.connect(audioContext.destination);
-
-          // Créer une mélodie simple
-          oscillator.frequency.setValueAtTime(600, audioContext.currentTime);
-          oscillator.frequency.setValueAtTime(800, audioContext.currentTime + 0.1);
-
-          gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-          gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.4);
-
-          oscillator.start(audioContext.currentTime);
-          oscillator.stop(audioContext.currentTime + 0.4);
-
-          setHasPlayedLoginSound(true);
-        } catch (err) {
-          console.error('Error playing login sound:', err);
-        }
+  const addToCart = (p: Omit<CartItem, 'quantity'>) => {
+    setCartItems(prev => {
+      const idx = prev.findIndex(i => i.id === p.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
+        return next;
       }
-    }
-  }, [user, hasPlayedLoginSound]);
+      return [...prev, { ...p, quantity: 1 }];
+    });
+  };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-[#0a1628] text-white flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-xl">Chargement...</p>
-        </div>
-      </div>
-    );
-  }
+  // Increment/decrement a line; quantity hitting 0 removes it (capped at stock).
+  const updateQty = (id: number, delta: number) => {
+    setCartItems(prev => prev.flatMap(i => {
+      if (i.id !== id) return [i];
+      const q = Math.min(i.stock_quantity || Infinity, i.quantity + delta);
+      return q <= 0 ? [] : [{ ...i, quantity: q }];
+    }));
+  };
+  const removeFromCart = (id: number) => setCartItems(prev => prev.filter(i => i.id !== id));
+  const clearCart = () => setCartItems([]);
 
-  if (!user) {
-    return <AuthPage />;
-  }
+  if (isLoading) return <Loader />;
+  if (!user)     return <AuthPage />;
 
+  const cartCount = cartItems.reduce((s, i) => s + i.quantity, 0);
 
   return (
-    <div className="min-h-screen bg-[#061325] text-white flex flex-col">
-      <Header username={user.username} onNavigate={setCurrentPage} />
-      {currentPage === 'home' && <HomePage onNavigate={setCurrentPage} onBuyProduct={handleBuyProduct} />}
-      {currentPage === 'stats' && <StatsPage user={user} onNavigate={setCurrentPage} />}
-      {currentPage === 'profile' && <ProfilePage user={user} onLogout={logout} onNavigate={setCurrentPage} />}
-      {currentPage === 'settings' && <SettingsPage user={user} onNavigate={setCurrentPage} />}
-      {currentPage === 'tournaments' && <TournamentPage onNavigate={setCurrentPage} />}
-      {currentPage === 'shop' && <ShopPage onNavigate={setCurrentPage} cartItems={cartItems} onCartUpdate={handleCartUpdate} />}
-      {currentPage === 'panier' && <PanierPage onNavigate={setCurrentPage} cartItems={cartItems} onCartUpdate={handleCartUpdate} onCheckout={handleCheckout} />}
-      {currentPage === 'payment' && <PaymentPage onNavigate={setCurrentPage} product={selectedProduct} cartItems={cartItems} onClearCart={handleClearCart} />}
-      <Footer />
-      <Navigation currentPage={currentPage} onPageChange={setCurrentPage} />
-    </div>
+    <B3App
+      user={user}
+      cartCount={cartCount}
+      cartItems={cartItems}
+      onLogout={logout}
+      onAddToCart={addToCart}
+      onUpdateQty={updateQty}
+      onRemoveFromCart={removeFromCart}
+      onClearCart={clearCart}
+    />
   );
 };
 
-const App = () => {
-  return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
-  );
-};
+const App: React.FC = () => (
+  <AuthProvider><AppContent /></AuthProvider>
+);
 
 export default App;
-
