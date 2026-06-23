@@ -1044,6 +1044,32 @@ app.get('/esports/matches/results', async (req, res) => {
   }
 });
 
+// Resolve the Twitch channel broadcasting a given match by scraping its vlr.gg
+// page (the wrapper API exposes no stream field). Cached 5 min — streams are stable.
+const STREAM_TTL = 300_000;
+const streamCache = new Map();
+app.get('/esports/matches/:id/stream', async (req, res) => {
+  const id = String(req.params.id).replace(/\D/g, '');
+  const url = id ? `https://www.vlr.gg/${id}` : 'https://www.vlr.gg';
+  if (!id) return res.json({ success: false, twitchChannel: null, url });
+  const hit = streamCache.get(id);
+  if (hit && Date.now() - hit.at < STREAM_TTL) return res.json(hit.data);
+  try {
+    const page = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (b3-esport)' } });
+    const html = await page.text();
+    // Prefer the official streams section, fall back to any twitch link on the page.
+    const m = html.match(/match-streams-btn[^"']*["'][^>]*href=["']https?:\/\/(?:www\.)?twitch\.tv\/([A-Za-z0-9_]+)/i)
+      || html.match(/https?:\/\/(?:www\.)?twitch\.tv\/([A-Za-z0-9_]+)/i);
+    const twitchChannel = m ? m[1] : null;
+    const data = { success: true, twitchChannel, url };
+    streamCache.set(id, { at: Date.now(), data });
+    res.json(data);
+  } catch (err) {
+    console.error('vlr.gg stream scrape error:', err);
+    res.json({ success: false, twitchChannel: null, url });
+  }
+});
+
 // vlr.gg has no per-event bracket feed via this wrapper — return empty.
 app.get('/esports/tournaments/:id/brackets', (req, res) => {
   res.json({ success: true, configured: true, data: [] });

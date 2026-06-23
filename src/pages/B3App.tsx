@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { User } from '../contexts/AuthContext';
 import { platformApi, type AdminOverviewResponse, type AdminUser, type DiscordServer, type Team, type OwnTournament, type AppNotification, type UserOrder, type PublicProfile, type PromoCode, type AuditEntry } from '../services/platformApi';
 import type { StatsRecord, MatchWithUser, ProductRecord } from '../types/api';
-import { getLiveMatches, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
+import { getLiveMatches, getMatchStream, getMatchesForTournament, getRunningTournaments, getUpcomingTournaments, hasPandaToken, type EsportsTournament, type LiveMatch, type TournamentMatch } from '../services/tournamentApi';
 
 export interface ShopItem {
   id: number; name: string; price: number; category: string;
@@ -237,6 +237,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [lfgPlayers, setLfgPlayers] = useState<LfgPlayer[] | null>(null);
   const [tourneys, setTourneys] = useState<EsportsTournament[] | null>(null);
   const [liveMatches, setLiveMatches] = useState<LiveMatch[] | null>(null);
+  const [featuredStream, setFeaturedStream] = useState<{ twitchUrl?: string; url: string } | null>(null);
   const [nextTourney, setNextTourney] = useState<EsportsTournament | null>(null);
   const [lfgSaving, setLfgSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -457,7 +458,16 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   // Home hero / countdown: live esports match + next upcoming tournament.
   useEffect(() => {
     let alive = true;
-    getLiveMatches().then(m => alive && setLiveMatches(m)).catch(() => alive && setLiveMatches([]));
+    getLiveMatches().then(m => {
+      if (!alive) return;
+      setLiveMatches(m);
+      // Resolve the broadcast (Twitch) of the featured live match.
+      if (m[0]?.id) {
+        getMatchStream(m[0].id)
+          .then(s => alive && setFeaturedStream({ twitchUrl: s.twitchUrl, url: s.url }))
+          .catch(() => undefined);
+      } else setFeaturedStream(null);
+    }).catch(() => alive && setLiveMatches([]));
     getUpcomingTournaments().then(u => alive && setNextTourney(u[0] ?? null)).catch(() => undefined);
     return () => { alive = false; };
   }, []);
@@ -819,7 +829,11 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     const nextSub = nextTourney
       ? [nextTourney.serie, nextTourney.prizepool].filter(Boolean).join(' · ').toUpperCase() || 'À VENIR'
       : 'ONLINE · €5 000 · S4';
-    const watch = lm?.twitchChannel ? `https://twitch.tv/${lm.twitchChannel}` : undefined;
+    // Direct Twitch channel if resolved, else the vlr.gg match page (also hosts the stream).
+    const watch = lm
+      ? (featuredStream?.twitchUrl || featuredStream?.url || `https://www.vlr.gg/${lm.id}`)
+      : undefined;
+    const watchIsTwitch = !!featuredStream?.twitchUrl;
 
     return (
       <div style={{ clipPath: scanClip, display: 'flex', flexDirection: 'column', gap: 34 }}>
@@ -838,7 +852,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
               <p style={{ margin: '14px 0 0', fontFamily: MONO, fontSize: 12, letterSpacing: '.04em', color: C.ink2, textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{heroSub}</p>
             </div>
             {watch
-              ? <a href={watch} target="_blank" rel="noopener noreferrer" className="b3-btn-ink" style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 12, marginTop: 20, padding: '14px 26px', color: C.paper, fontFamily: UI, fontSize: 14, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', textDecoration: 'none' }}>▶ Regarder le live</a>
+              ? <a href={watch} target="_blank" rel="noopener noreferrer" className="b3-btn-ink" style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 12, marginTop: 20, padding: '14px 26px', color: C.paper, fontFamily: UI, fontSize: 14, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', textDecoration: 'none' }}>{watchIsTwitch ? '▶ Regarder sur Twitch' : '▶ Regarder le live'}</a>
               : <button onClick={() => setScreen('tournaments')} className="b3-btn-ink" style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 12, marginTop: 20, padding: '14px 26px', border: 0, color: C.paper, fontFamily: UI, fontSize: 14, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase', cursor: 'pointer' }}>▶ Voir les tournois</button>}
           </div>
           <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 22, padding: 30, background: C.ink, color: C.paper, overflow: 'hidden' }}>

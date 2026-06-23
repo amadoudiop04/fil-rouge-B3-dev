@@ -112,6 +112,25 @@ export async function getLiveMatches(): Promise<LiveMatch[]> {
   }
 }
 
+// Resolve where a live match is being broadcast. Returns the direct Twitch URL
+// when found, always with the vlr.gg match page as a guaranteed fallback.
+export async function getMatchStream(id: number): Promise<{ twitchChannel?: string; twitchUrl?: string; url: string }> {
+  const fallback = `https://www.vlr.gg/${id}`;
+  try {
+    const res = await fetch(`${API_BASE}/esports/matches/${id}/stream`);
+    if (!res.ok) return { url: fallback };
+    const json = await res.json() as { twitchChannel?: string | null; url?: string };
+    const channel = json.twitchChannel || undefined;
+    return {
+      twitchChannel: channel,
+      twitchUrl: channel ? `https://www.twitch.tv/${channel}` : undefined,
+      url: json.url || fallback,
+    };
+  } catch {
+    return { url: fallback };
+  }
+}
+
 const mapEvent = (status: 'live' | 'upcoming') => (t: any): EsportsTournament => ({
   id:        Number(t.id) || 0,
   name:      t.name ?? '',
