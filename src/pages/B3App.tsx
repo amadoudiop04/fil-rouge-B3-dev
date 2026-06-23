@@ -237,7 +237,8 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const [lfgPlayers, setLfgPlayers] = useState<LfgPlayer[] | null>(null);
   const [tourneys, setTourneys] = useState<EsportsTournament[] | null>(null);
   const [liveMatches, setLiveMatches] = useState<LiveMatch[] | null>(null);
-  const [featuredStream, setFeaturedStream] = useState<{ twitchUrl?: string; url: string } | null>(null);
+  // matchId -> resolved broadcast (direct Twitch URL when found, vlr.gg page fallback).
+  const [liveStreams, setLiveStreams] = useState<Record<number, { twitchUrl?: string; url: string }>>({});
   const [nextTourney, setNextTourney] = useState<EsportsTournament | null>(null);
   const [lfgSaving, setLfgSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -461,12 +462,13 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     getLiveMatches().then(m => {
       if (!alive) return;
       setLiveMatches(m);
-      // Resolve the broadcast (Twitch) of the featured live match.
-      if (m[0]?.id) {
-        getMatchStream(m[0].id)
-          .then(s => alive && setFeaturedStream({ twitchUrl: s.twitchUrl, url: s.url }))
+      // Resolve the broadcast (Twitch) of every live match — results are cached server-side.
+      for (const lm of m) {
+        if (!lm.id) continue;
+        getMatchStream(lm.id)
+          .then(s => alive && setLiveStreams(prev => ({ ...prev, [lm.id]: { twitchUrl: s.twitchUrl, url: s.url } })))
           .catch(() => undefined);
-      } else setFeaturedStream(null);
+      }
     }).catch(() => alive && setLiveMatches([]));
     getUpcomingTournaments().then(u => alive && setNextTourney(u[0] ?? null)).catch(() => undefined);
     return () => { alive = false; };
@@ -830,6 +832,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
       ? [nextTourney.serie, nextTourney.prizepool].filter(Boolean).join(' · ').toUpperCase() || 'À VENIR'
       : 'ONLINE · €5 000 · S4';
     // Direct Twitch channel if resolved, else the vlr.gg match page (also hosts the stream).
+    const featuredStream = lm ? liveStreams[lm.id] : undefined;
     const watch = lm
       ? (featuredStream?.twitchUrl || featuredStream?.url || `https://www.vlr.gg/${lm.id}`)
       : undefined;
@@ -868,6 +871,44 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
             </div>
           </div>
         </section>
+
+        {/* live matches — all current matches, click to watch */}
+        {liveMatches && liveMatches.length > 0 && (
+          <section>
+            <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 10 }}>
+              <p style={kicker('// MATCHS_EN_DIRECT')}>// MATCHS_EN_DIRECT</p>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', color: C.red }}>
+                <span style={{ height: 7, width: 7, background: C.red }} />{liveMatches.length} EN DIRECT
+              </span>
+            </div>
+            <div style={{ borderTop: `2px solid ${C.ink}` }}>
+              {liveMatches.map(m => {
+                const s = liveStreams[m.id];
+                const href = s?.twitchUrl || s?.url || `https://www.vlr.gg/${m.id}`;
+                const onTwitch = !!s?.twitchUrl;
+                return (
+                  <a key={m.id} href={href} target="_blank" rel="noopener noreferrer" className="b3-row"
+                    style={{ display: 'flex', alignItems: 'center', gap: 18, padding: '16px 6px', borderBottom: `1px solid ${C.line}`, textDecoration: 'none', color: C.ink, cursor: 'pointer' }}>
+                    <span style={{ flex: 'none', height: 8, width: 8, background: C.red }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontFamily: DISP, fontSize: 22, lineHeight: 1, textTransform: 'uppercase' }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }} title={m.team1.name}>{m.team1.name}</span>
+                        <span style={{ fontFamily: MONO, fontSize: 16, fontWeight: 700, color: C.red }}>{m.team1.score}–{m.team2.score}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 180 }} title={m.team2.name}>{m.team2.name}</span>
+                      </div>
+                      <p style={{ margin: '5px 0 0', fontFamily: MONO, fontSize: 10.5, color: C.muted, textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {[m.tournament, m.serie].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
+                    <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 14px', background: onTwitch ? '#9146FF' : C.ink, color: '#fff', fontFamily: UI, fontSize: 12, fontWeight: 800, letterSpacing: '.04em', textTransform: 'uppercase' }}>
+                      ▶ {onTwitch ? 'Twitch' : 'Regarder'}
+                    </span>
+                  </a>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         {/* stat ribbon */}
         <section>
