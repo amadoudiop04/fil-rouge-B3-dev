@@ -471,9 +471,7 @@ app.get('/health', async (req, res) => {
   res.json({ success: true });
 });
 
-// ════════════════════════════════════════════════════════
 //  AUTH
-// ════════════════════════════════════════════════════════
 app.post('/auth/register', async (req, res) => {
   const body = req.body || {};
   const username = String(body.username || '').trim();
@@ -539,9 +537,7 @@ app.post('/auth/logout', async (req, res) => {
   res.json({ success: true });
 });
 
-// ════════════════════════════════════════════════════════
 //  USERS — profile + password (self only)
-// ════════════════════════════════════════════════════════
 app.put('/users/:id/profile', requireAuth, async (req, res) => {
   const userId = Number(req.params.id);
   if (req.userId !== userId) {
@@ -748,9 +744,7 @@ app.post('/users/:id/sync', requireAuth, async (req, res) => {
   res.json({ success: true, synced, fetched: fetched.length, rankLabel: latestRank, matches: await getMatchHistory(userId) });
 });
 
-// ════════════════════════════════════════════════════════
 //  RIOT proxy — official Riot API
-// ════════════════════════════════════════════════════════
 const TIER_NAMES = [
   'Non classé','Non classé','Non classé','Iron 1','Iron 2','Iron 3',
   'Bronze 1','Bronze 2','Bronze 3','Silver 1','Silver 2','Silver 3',
@@ -1000,9 +994,7 @@ app.get('/riot/matches/:name/:tag', async (req, res) => {
   res.json({ success: true, matches });
 });
 
-// ════════════════════════════════════════════════════════
 //  ESPORTS — vlr.gg proxy (real Valorant data, no token needed)
-// ════════════════════════════════════════════════════════
 app.get('/esports/tournaments/running', async (req, res) => {
   try {
     const data = await fetchVlr('/events?status=ongoing');
@@ -1080,9 +1072,7 @@ app.get('/esports/*splat', (req, res) => {
   res.status(404).json({ success: false, error: 'Route esports introuvable' });
 });
 
-// ════════════════════════════════════════════════════════
 //  COMMUNITY (LFG)
-// ════════════════════════════════════════════════════════
 app.get('/users/lfg', async (req, res) => {
   const [rows] = await pool.execute(
     `SELECT id, username, riot_id, tag_line, bio, discord, twitter, twitch, youtube, rank_label, roles, region, languages, playtimes, lfg_status, avatar_url FROM users WHERE show_in_lfg = 1`
@@ -1108,9 +1098,7 @@ app.get('/users/lfg', async (req, res) => {
   res.json({ success: true, players });
 });
 
-// ════════════════════════════════════════════════════════
 //  SHOP — public
-// ════════════════════════════════════════════════════════
 const getActivePromo = async (code) => {
   if (!code) return null;
   const [[row]] = await pool.query(
@@ -1187,9 +1175,7 @@ app.post('/orders', requireAuth, async (req, res) => {
   res.status(201).json({ success: true, orderId });
 });
 
-// ════════════════════════════════════════════════════════
 //  ADMIN — protected (is_admin required)
-// ════════════════════════════════════════════════════════
 app.get('/admin/overview', requireAdmin, async (req, res) => {
   const [[{ users }]]    = await pool.query('SELECT COUNT(*) AS users FROM users');
   const [[{ admins }]]   = await pool.query('SELECT COUNT(*) AS admins FROM users WHERE is_admin = 1');
@@ -1337,9 +1323,7 @@ app.delete('/admin/products/:id', requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// ════════════════════════════════════════════════════════
 //  DISCORD SERVERS — public list + admin management
-// ════════════════════════════════════════════════════════
 app.get('/discord-servers', async (req, res) => {
   const [rows] = await pool.query('SELECT id, name, description, invite_url, members, tag, featured FROM discord_servers ORDER BY featured DESC, id ASC');
   res.json({ success: true, servers: rows.map(r => ({ ...r, featured: r.featured ? 1 : 0 })) });
@@ -1492,9 +1476,7 @@ app.delete('/admin/teams/:id/members/:userId', requireAdmin, async (req, res) =>
   res.json({ success: true, team: await teamWithMembers(teamId) });
 });
 
-// ════════════════════════════════════════════════════════
 //  TEAMS
-// ════════════════════════════════════════════════════════
 const teamWithMembers = async (teamId, includeRequests = false) => {
   const [[team]] = await pool.query('SELECT * FROM teams WHERE id = ?', [teamId]);
   if (!team) return null;
@@ -1692,9 +1674,7 @@ app.delete('/teams/:id', requireAuth, async (req, res) => {
   res.json({ success: true });
 });
 
-// ════════════════════════════════════════════════════════
 //  TOURNAMENTS (own) + single-elimination brackets
-// ════════════════════════════════════════════════════════
 const nextPow2 = (n) => { let p = 1; while (p < n) p *= 2; return Math.max(p, 2); };
 
 // Advance a match winner into the appropriate slot of the next round.
