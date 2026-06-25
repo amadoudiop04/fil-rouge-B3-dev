@@ -6,7 +6,7 @@ import { RegisterForm } from '../pages/RegisterForm';
 const sp = { type: 'spring' as const, stiffness: 380, damping: 30 };
 const C = { ink: 'var(--ink)', paper: 'var(--paper)', red: 'var(--red)', muted: 'var(--muted)', line: 'var(--line)', ink2: 'var(--ink2)' };
 
-export const AuthPage: React.FC = () => {
+export const AuthPage: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const [mode, setMode] = useState<'login' | 'register'>('login');
 
   return (
@@ -77,6 +77,17 @@ export const AuthPage: React.FC = () => {
           </AnimatePresence>
         </div>
       </motion.div>
+
+      {onBack && (
+        <motion.button
+          type="button" onClick={onBack}
+          initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.55 }}
+          className="relative mt-6 font-mono uppercase transition hover:opacity-70"
+          style={{ fontSize: 11, letterSpacing: '.14em', color: C.ink2, background: 'transparent', border: 0, cursor: 'pointer' }}
+        >
+          ← Continuer en tant qu'invité
+        </motion.button>
+      )}
 
       <motion.p
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.7 }}

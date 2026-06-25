@@ -26,6 +26,9 @@ const Loader: React.FC = () => (
 const AppContent: React.FC = () => {
   const { user, logout, isLoading } = useAuth();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  // Guests browse the app in read-only mode; this flips to the login/register page
+  // when they pick "Se connecter" or try a members-only action.
+  const [showAuth, setShowAuth] = useState(false);
 
   const addToCart = (p: Omit<CartItem, 'quantity'>) => {
     setCartItems(prev => {
@@ -51,7 +54,8 @@ const AppContent: React.FC = () => {
   const clearCart = () => setCartItems([]);
 
   if (isLoading) return <Loader />;
-  if (!user)     return <AuthPage />;
+  // Logged out: either the auth page (when requested) or the app in guest mode.
+  if (!user && showAuth) return <AuthPage onBack={() => setShowAuth(false)} />;
 
   const cartCount = cartItems.reduce((s, i) => s + i.quantity, 0);
 
@@ -61,6 +65,7 @@ const AppContent: React.FC = () => {
       cartCount={cartCount}
       cartItems={cartItems}
       onLogout={logout}
+      onRequireAuth={() => setShowAuth(true)}
       onAddToCart={addToCart}
       onUpdateQty={updateQty}
       onRemoveFromCart={removeFromCart}

@@ -29,29 +29,45 @@ type Screen =
 export type CartLine = ShopItem & { quantity: number };
 
 interface B3AppProps {
-  user: User;
+  user: User | null;
   cartCount: number;
   cartItems?: CartLine[];
   onLogout: () => void;
+  onRequireAuth?: () => void;
   onAddToCart?: (p: ShopItem) => void;
   onUpdateQty?: (id: number, delta: number) => void;
   onRemoveFromCart?: (id: number) => void;
   onClearCart?: () => void;
 }
 
-const NAV_DEF: { id: Screen; label: string; adminOnly?: boolean }[] = [
+// Screens flagged guestOnlyHidden are members-only and never shown to guests.
+const NAV_DEF: { id: Screen; label: string; adminOnly?: boolean; guestHidden?: boolean }[] = [
   { id: 'home', label: 'Accueil' },
   { id: 'stats', label: 'Stats' },
   { id: 'agents', label: 'Agents' },
-  { id: 'players', label: 'Joueurs' },
+  { id: 'players', label: 'Joueurs', guestHidden: true },
   { id: 'tournaments', label: 'Tournois' },
   { id: 'shop', label: 'Shop' },
   { id: 'discord', label: 'Discord' },
-  { id: 'profile', label: 'Profil' },
+  { id: 'profile', label: 'Profil', guestHidden: true },
   { id: 'admin', label: 'Admin', adminOnly: true },
 ];
 
-const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout, onAddToCart, onUpdateQty, onRemoveFromCart, onClearCart }) => {
+// Synthetic identity used while browsing logged-out, so the (member-built) UI
+// can render without null checks everywhere. Guests never trigger writes.
+const GUEST_USER: User = { id: '0', email: '', username: 'Invité', isAdmin: false };
+
+const B3App: React.FC<B3AppProps> = ({ user: authUser, cartCount, cartItems = [], onLogout, onRequireAuth, onAddToCart, onUpdateQty, onRemoveFromCart, onClearCart }) => {
+  const isGuest = !authUser;
+  const user = authUser ?? GUEST_USER;
+  // Guests can't perform members-only actions — send them back to the main page
+  // (login stays available via the "Se connecter" button). Returns true when blocked.
+  const requireAuth = () => {
+    if (!isGuest) return false;
+    notify('Connecte-toi pour accéder à cette fonctionnalité');
+    setScreen('home');
+    return true;
+  };
   const [screen, setScreenRaw] = useState<Screen>('home');
   const [role, setRole] = useState('Tous');
   const [cat, setCat] = useState('Tout');
@@ -264,6 +280,14 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   // Stats + recent matches for the current player.
   useEffect(() => {
     let alive = true;
+    // Guests have no account → show the public demo feed instead of personal stats.
+    if (isGuest) {
+      setMatchesReal(false);
+      platformApi.getRecentMatches(8)
+        .then(d => { if (alive) setStatsData({ stats: null, matches: (d.success && d.matches) ? d.matches : [] }); })
+        .catch(() => { if (alive) setStatsData({ stats: null, matches: [] }); });
+      return () => { alive = false; };
+    }
     Promise.all([
       platformApi.getUserStats(Number(user.id)),
       platformApi.getMatchHistory(Number(user.id)),
@@ -327,7 +351,12 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // B3 Arena data (my teams + community tournaments) — loaded on the Tournois tab.
   const reloadArena = () =>
-    Promise.all([platformApi.getMyTeams(), platformApi.getOwnTournaments(), platformApi.getTeams()]).then(([t, to, at]) => {
+    Promise.all([
+      // Guests have no teams of their own — skip the auth-only call so the rest still loads.
+      isGuest ? Promise.resolve({ success: true, teams: [] as Team[] }) : platformApi.getMyTeams(),
+      platformApi.getOwnTournaments(),
+      platformApi.getTeams(),
+    ]).then(([t, to, at]) => {
       setMyTeams(t.success && t.teams ? t.teams : []);
       setOwnTournaments(to.success && to.tournaments ? to.tournaments : []);
       setAllTeams(at.success && at.teams ? at.teams : []);
@@ -339,6 +368,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // Notifications — load on mount and poll every 45s for the bell badge.
   useEffect(() => {
+    if (isGuest) return;
     let alive = true;
     const load = () => platformApi.getNotifications(Number(user.id)).then(r => {
       if (!alive || !r.success) return;
@@ -352,6 +382,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // Realtime updates over WebSocket — instant bell + live bracket scores.
   useEffect(() => {
+    if (isGuest) return;
     let socket: WebSocket | null = null;
     let retry: number | undefined;
     let closed = false;
@@ -415,6 +446,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // ── Arena action handlers ──────────────────────────────────
   const createTeamH = async () => {
+    if (requireAuth()) return;
     const name = teamForm.name.trim();
     if (!name) { notify('Nom d’équipe requis'); return; }
     setArenaBusy(true);
@@ -426,6 +458,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Équipe créée');
   };
   const deleteTeamH = async (id: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.deleteTeam(id);
     setArenaBusy(false);
@@ -434,6 +467,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Équipe supprimée');
   };
   const addMemberH = async (teamId: number) => {
+    if (requireAuth()) return;
     const username = (memberInputs[teamId] || '').trim();
     if (!username) { notify('Pseudo requis'); return; }
     setArenaBusy(true);
@@ -445,6 +479,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Membre ajouté');
   };
   const removeMemberH = async (teamId: number, userId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.removeTeamMember(teamId, userId);
     setArenaBusy(false);
@@ -452,12 +487,14 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     await reloadArena();
   };
   const requestJoinH = async (teamId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.requestJoinTeam(teamId);
     setArenaBusy(false);
     notify(r.success ? 'Demande envoyée au capitaine' : (r.error || 'Échec'));
   };
   const acceptReqH = async (teamId: number, userId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.acceptTeamRequest(teamId, userId);
     setArenaBusy(false);
@@ -466,6 +503,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Demande acceptée');
   };
   const declineReqH = async (teamId: number, userId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.declineTeamRequest(teamId, userId);
     setArenaBusy(false);
@@ -475,6 +513,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   };
 
   const createTournamentH = async () => {
+    if (requireAuth()) return;
     const name = tourForm.name.trim();
     if (!name) { notify('Nom du tournoi requis'); return; }
     setArenaBusy(true);
@@ -493,6 +532,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   // Actions on the open tournament detail — refresh both the detail and the list.
   const refreshDetail = (t?: OwnTournament) => { if (t) setViewArena(t); reloadArena().catch(() => undefined); };
   const registerH = async (tournamentId: number, teamId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.registerTeam(tournamentId, teamId);
     setArenaBusy(false);
@@ -501,6 +541,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Équipe inscrite');
   };
   const unregisterH = async (tournamentId: number, teamId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.unregisterTeam(tournamentId, teamId);
     setArenaBusy(false);
@@ -508,6 +549,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     refreshDetail(r.tournament);
   };
   const startH = async (tournamentId: number) => {
+    if (requireAuth()) return;
     setArenaBusy(true);
     const r = await platformApi.startTournament(tournamentId);
     setArenaBusy(false);
@@ -516,6 +558,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     notify('Tournoi lancé — bracket généré');
   };
   const reportH = async (tournamentId: number, matchId: number) => {
+    if (requireAuth()) return;
     const inp = scoreInputs[matchId] || { s1: '', s2: '' };
     const s1 = Number(inp.s1), s2 = Number(inp.s2);
     if (inp.s1 === '' || inp.s2 === '' || Number.isNaN(s1) || Number.isNaN(s2)) { notify('Saisis les deux scores'); return; }
@@ -529,6 +572,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   // Pull the player's latest matches from Riot and persist them.
   const syncRiotH = async () => {
+    if (requireAuth()) return;
     if (!user.riotId || !user.tagLine) { notify('Connecte ton Riot ID dans Profil d’abord'); return; }
     setSyncing(true);
     const r = await platformApi.syncRiotMatches(Number(user.id));
@@ -543,6 +587,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
 
   const addToCart = (p: ShopItem) => {
     if (p.stock_quantity === 0) return;
+    if (requireAuth()) return;
     onAddToCart?.(p);
     setToast(p.name);
     window.clearTimeout(toastTimer.current);
@@ -570,6 +615,12 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
     toastTimer.current = window.setTimeout(() => setToast(null), 1900);
   };
 
+  // Safety net: a guest must never sit on a members-only screen — bounce to home.
+  useEffect(() => {
+    if (!isGuest) return;
+    if (NAV_DEF.some(n => n.id === screen && (n.adminOnly || n.guestHidden))) setScreen('home');
+  }, [isGuest, screen]);
+
   const N = (v: number, d = 0) => (v * e).toFixed(d);
   const W = (v: number) => (v * e).toFixed(2) + '%';
 
@@ -577,7 +628,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
   const scanX = (e * 100).toFixed(2) + '%';
   const scanOp = e >= 1 ? 0 : 1;
 
-  const nav = NAV_DEF.filter(n => !n.adminOnly || user.isAdmin);
+  const nav = NAV_DEF.filter(n => (!n.adminOnly || user.isAdmin) && (!isGuest || !n.guestHidden));
 
   /* ── shared bits ─────────────────────────────────────────── */
   const kicker = (text: string, color: string = C.red): React.CSSProperties => ({
@@ -3024,7 +3075,7 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
           <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontFamily: MONO, fontSize: 10, fontWeight: 700, letterSpacing: '.12em' }}>
             <span style={{ height: 8, width: 8, background: C.red }} />LIVE · EUW
           </span>
-          <div style={{ position: 'relative' }}>
+          {!isGuest && <div style={{ position: 'relative' }}>
             <button onClick={toggleNotifs} title="Notifications"
               style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 38, border: `1.5px solid ${C.ink}`, background: notifOpen ? C.ink : 'transparent', color: notifOpen ? C.paper : C.ink, cursor: 'pointer', fontSize: 16 }}>
               ◉
@@ -3046,16 +3097,24 @@ const B3App: React.FC<B3AppProps> = ({ user, cartCount, cartItems = [], onLogout
                     ))}
               </div>
             )}
-          </div>
+          </div>}
           <button onClick={() => setScreen('panier')} className="b3-panier"
             style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', border: `1.5px solid ${C.ink}`, background: screen === 'panier' ? C.red : C.ink, color: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', cursor: 'pointer' }}>
             PANIER [{cartCount}]
           </button>
-          <button onClick={onLogout} title="Se déconnecter"
-            style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', border: `1.5px solid ${C.ink}`, background: 'transparent', color: C.ink, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', cursor: 'pointer' }}
-            className="b3-btn-ondark">
-            QUITTER
-          </button>
+          {isGuest ? (
+            <button onClick={() => onRequireAuth?.()} title="Se connecter ou s'inscrire"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', border: `1.5px solid ${C.ink}`, background: C.red, color: C.paper, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', cursor: 'pointer' }}
+              className="b3-btn-ondark">
+              SE CONNECTER
+            </button>
+          ) : (
+            <button onClick={onLogout} title="Se déconnecter"
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 14px', border: `1.5px solid ${C.ink}`, background: 'transparent', color: C.ink, fontFamily: MONO, fontSize: 11, fontWeight: 700, letterSpacing: '.08em', cursor: 'pointer' }}
+              className="b3-btn-ondark">
+              QUITTER
+            </button>
+          )}
         </div>
       </header>
 
