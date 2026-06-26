@@ -5,6 +5,7 @@ import cors from 'cors';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
 import { WebSocketServer } from 'ws';
+import { isValidEmail, validatePassword } from './lib/validation.mjs';
 
 dotenv.config();
 
@@ -13,6 +14,8 @@ const SALT_ROUNDS = 10;
 const TEAM_MAX_MEMBERS = 5; // a Valorant roster — no team may exceed this
 // Front-end origin allowed to call this API (browser CORS). Override via env if needed.
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+// Public URL of the web app, used to build password-reset links.
+const APP_BASE_URL = process.env.APP_BASE_URL || CORS_ORIGIN;
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -280,6 +283,16 @@ const initDb = async () => {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
   `);
   await pool.execute(`
+    CREATE TABLE IF NOT EXISTS password_resets (
+      token VARCHAR(64) NOT NULL PRIMARY KEY,
+      user_id INT(11) NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT current_timestamp(),
+      expires_at DATETIME NOT NULL,
+      used_at DATETIME DEFAULT NULL,
+      KEY idx_resets_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+  `);
+  await pool.execute(`
     CREATE TABLE IF NOT EXISTS promo_codes (
       id INT(11) NOT NULL AUTO_INCREMENT PRIMARY KEY,
       code VARCHAR(40) NOT NULL UNIQUE,
@@ -437,6 +450,30 @@ const deleteSession = async (req) => {
   if (token) await pool.execute('DELETE FROM sessions WHERE token = ?', [token]);
 };
 
+// ── Password reset helpers ──────────────────────────────────
+const RESET_TTL_MINUTES = 60;
+
+// Issue a single-use reset token (valid RESET_TTL_MINUTES). Older unused tokens
+// for the same user are dropped so only the latest link works.
+const createPasswordReset = async (userId) => {
+  const token = crypto.randomBytes(32).toString('hex');
+  await pool.execute('DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL', [userId]);
+  await pool.execute(
+    'INSERT INTO password_resets (token, user_id, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))',
+    [token, userId, RESET_TTL_MINUTES]
+  );
+  return token;
+};
+
+// Returns the user_id for a still-valid token, or null. Does not consume it.
+const getResetUserId = async (token) => {
+  const [[row]] = await pool.query(
+    'SELECT user_id FROM password_resets WHERE token = ? AND used_at IS NULL AND expires_at > NOW()',
+    [token]
+  );
+  return row ? row.user_id : null;
+};
+
 // ── Auth middleware ─────────────────────────────────────────
 // Populates req.userId for any logged-in caller; 401 otherwise.
 const requireAuth = async (req, res, next) => {
@@ -481,8 +518,12 @@ app.post('/auth/register', async (req, res) => {
   if (!username || !email || !password) {
     return res.status(400).json({ success: false, error: 'Champs requis manquants' });
   }
-  if (password.length < 6) {
-    return res.status(400).json({ success: false, error: 'Le mot de passe doit contenir au moins 6 caracteres' });
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ success: false, error: 'Adresse email invalide' });
+  }
+  const pwCheck = validatePassword(password);
+  if (!pwCheck.ok) {
+    return res.status(400).json({ success: false, error: pwCheck.error });
   }
 
   const existing = await getUserByEmail(email);
@@ -522,6 +563,55 @@ app.post('/auth/login', async (req, res) => {
 
   const token = await createSession(user.id);
   res.json({ success: true, user: sanitizeUser(user), token });
+});
+
+// Request a reset link. Always replies success so an attacker can't probe which
+// emails exist. With no mailer configured, the link is logged + returned in dev.
+app.post('/auth/forgot-password', async (req, res) => {
+  const email = String((req.body || {}).email || '').trim().toLowerCase();
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ success: false, error: 'Adresse email invalide' });
+  }
+
+  const user = await getUserByEmail(email);
+  const generic = { success: true, message: 'Si un compte existe, un lien de réinitialisation a été envoyé.' };
+  if (!user || user.banned) return res.json(generic);
+
+  const token = await createPasswordReset(user.id);
+  const link = `${APP_BASE_URL}/?token=${token}`;
+  console.log(`[reset] Lien de réinitialisation pour ${email} : ${link}`);
+
+  // No SMTP in this project → expose the link to the client outside production
+  // so the flow is demonstrable end-to-end.
+  if (process.env.NODE_ENV !== 'production') {
+    return res.json({ ...generic, devResetToken: token, devResetLink: link });
+  }
+  res.json(generic);
+});
+
+// Consume a reset token and set a new password. Invalidates all sessions so any
+// stolen token/old session can't keep access after a reset.
+app.post('/auth/reset-password', async (req, res) => {
+  const body = req.body || {};
+  const token = String(body.token || '');
+  const password = String(body.password || '');
+
+  const pwCheck = validatePassword(password);
+  if (!pwCheck.ok) {
+    return res.status(400).json({ success: false, error: pwCheck.error });
+  }
+
+  const userId = await getResetUserId(token);
+  if (!userId) {
+    return res.status(400).json({ success: false, error: 'Lien invalide ou expiré' });
+  }
+
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, userId]);
+  await pool.execute('UPDATE password_resets SET used_at = NOW() WHERE token = ?', [token]);
+  await pool.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
+
+  res.json({ success: true, message: 'Mot de passe réinitialisé. Tu peux te connecter.' });
 });
 
 app.get('/auth/me', async (req, res) => {

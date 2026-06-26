@@ -330,6 +330,24 @@ export const platformApi = {
     return { success: false, error: 'API locale indisponible' };
   },
 
+  // Request a password-reset link. The API always reports success (no email
+  // enumeration); in dev it returns the token/link since there is no mailer.
+  async forgotPassword(email: string): Promise<{ success: boolean; message?: string; error?: string; devResetToken?: string; devResetLink?: string }> {
+    const r = await callApi<{ success: boolean; message?: string; error?: string; devResetToken?: string; devResetLink?: string }>('/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    return r ?? { success: false, error: 'API locale indisponible' };
+  },
+
+  async resetPassword(token: string, password: string): Promise<{ success: boolean; message?: string; error?: string }> {
+    const r = await callApi<{ success: boolean; message?: string; error?: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    });
+    return r ?? { success: false, error: 'API locale indisponible' };
+  },
+
   async getCurrentUser(): Promise<AuthResponse> {
     const apiResponse = await callApi<AuthResponse>('/auth/me', {
       method: 'GET',

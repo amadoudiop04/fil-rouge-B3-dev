@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 const sp = { type: 'spring' as const, stiffness: 400, damping: 30 };
 
-export const LoginForm: React.FC<{ onSwitchToRegister: () => void }> = ({ onSwitchToRegister }) => {
+export const LoginForm: React.FC<{ onSwitchToRegister: () => void; onForgot?: () => void }> = ({ onSwitchToRegister, onForgot }) => {
   const { login } = useAuth();
   const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
@@ -70,6 +70,14 @@ export const LoginForm: React.FC<{ onSwitchToRegister: () => void }> = ({ onSwit
           </span>
         ) : 'Se connecter'}
       </motion.button>
+
+      {onForgot && (
+        <p className="text-center text-[13px]">
+          <button type="button" onClick={onForgot} className="font-medium transition hover:opacity-80" style={{ color: 'var(--violet2)' }}>
+            Mot de passe oublié ?
+          </button>
+        </p>
+      )}
 
       <p className="text-center text-[13px]" style={{ color: 'var(--text3)' }}>
         Pas encore de compte ?{' '}
